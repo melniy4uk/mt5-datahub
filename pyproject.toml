@@ -7,7 +7,9 @@ authors = [
     { name = "Melnik", email = "melniy4uk@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "metatrader5>=5.0.6231",
+]
 
 [project.scripts]
 mt5-datahub = "mt5_datahub:main"
