@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from mt5_datahub.sessions import SessionSchedule, classify_gap
 from mt5_datahub.storage.parquet import ParquetCache
 from mt5_datahub.timeutils import from_us, to_us, validate_range
 
@@ -19,6 +20,7 @@ class TickGap:
     before: datetime
     after: datetime
     seconds: float
+    classification: str = "unverified_history"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,7 @@ class TickQualityReport:
     large_gaps: tuple[TickGap, ...]
     repeated_timestamps: int
     out_of_order_timestamps: int
+    session_schedule_name: str | None = None
 
     @property
     def cached_request_coverage(self) -> bool:
@@ -50,13 +53,14 @@ class TickQualityReport:
             f"Large inter-tick gaps: {len(self.large_gaps)}",
             f"Repeated millisecond timestamps: {self.repeated_timestamps}",
             f"Out-of-order timestamps: {self.out_of_order_timestamps}",
+            f"Session schedule: {self.session_schedule_name or 'not provided'}",
         ]
         for left, right in self.uncovered:
             lines.append(f"UNCOVERED {left.isoformat()} .. {right.isoformat()}")
         for gap in self.large_gaps:
             lines.append(
                 f"GAP {gap.before.isoformat()} .. {gap.after.isoformat()}"
-                f" ({gap.seconds:.3f}s)"
+                f" ({gap.seconds:.3f}s) [{gap.classification}]"
             )
         lines.append(
             "NOTE: Neither stored intervals nor inter-tick gaps establish "
@@ -75,11 +79,12 @@ def audit_ticks(
     *,
     gap_threshold: timedelta = timedelta(minutes=5),
     max_gaps: int = 20,
+    schedule: SessionSchedule | None = None,
 ) -> TickQualityReport:
     """Inspect saved XAUUSD.s ticks without querying MT5.
 
     max_gaps limits only the *reported* gaps; it never changes tick totals.
-    This is a diagnostic, not a certification of broker-history completeness.
+    A supplied session schedule classifies gaps as expected session breaks\n    or unexplained open-session gaps; without one gaps remain unverified.\n    This is not a certification of broker-history completeness.
     """
     start, end = validate_range(start, end)
     if not symbol.strip() or not source.strip():
@@ -107,6 +112,10 @@ def audit_ticks(
             before=from_us(int(times_ms[i]) * 1000),
             after=from_us(int(times_ms[i + 1]) * 1000),
             seconds=float(deltas_ms[i]) / 1000,
+            classification=classify_gap(
+                from_us(int(times_ms[i]) * 1000),
+                from_us(int(times_ms[i + 1]) * 1000), schedule
+            ),
         )
         for i in selected
     )
@@ -121,4 +130,5 @@ def audit_ticks(
         large_gaps=gaps,
         repeated_timestamps=int(np.count_nonzero(deltas_ms == 0)),
         out_of_order_timestamps=int(np.count_nonzero(deltas_ms < 0)),
+        session_schedule_name=schedule.name if schedule is not None else None,
     )

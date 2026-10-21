@@ -71,3 +71,29 @@ report = audit_ticks(
 )
 print(report.format())
 ```
+
+## Session-aware gap classification (XAUUSD.s)
+
+The quality audit labels each large tick gap as:
+
+- `session_break`: predominantly outside a **user-supplied** weekly UTC
+  quoting schedule, allowing at most two minutes or 5% of boundary overlap.
+- `unexplained_gap`: substantial part of the gap is inside a configured
+  quoting session. Investigation is required; it is **not proof of data loss**.
+- `unverified_history`: no schedule supplied, so no inference is made.
+
+Provide your broker's verified **quoting** hours, not generic gold-market
+hours, in a JSON file with an array of `weekday` (Monday=0 through Sunday=6),
+`opens` and `closes` (UTC 24-hour times). Overnight sessions are supported.
+
+```powershell
+uv run python examples/audit_xauusd.py --sessions path/to/verified-sessions.json
+```
+
+`examples/sessions.example.json` is only a syntax illustration; its hours
+are **not verified for any broker**, including `XAUUSD.s`. Without
+`--sessions`, the audit safely uses `unverified_history`.
+
+Broker holidays, daylight-saving time, exceptional closures and live changes
+are not represented by the weekly schedule. Cached-request coverage and these
+labels cannot establish tick-history completeness.
