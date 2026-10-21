@@ -11,7 +11,7 @@ from numpy import ndarray
 
 from mt5_datahub.providers.mt5 import MT5Provider
 from mt5_datahub.storage.parquet import ParquetCache
-from mt5_datahub.timeframes import VALID, closed_only
+from mt5_datahub.timeframes import VALID, closed_only, current_bar_open_us
 from mt5_datahub.timeutils import from_us, to_us, validate_range
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ class MarketData:
         """
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind="ticks", timeframe=0)
         if first >= last:
             return
         self._fill_cache(symbol, "ticks", 0, first, last)
@@ -126,7 +126,7 @@ class MarketData:
             or any(name not in names for name in columns)
         ):
             raise ValueError("Unknown or duplicated requested column")
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind="ticks", timeframe=0)
         cursor = first
         while cursor < last:
             stop = min(cursor + self._chunk["ticks"], last)
@@ -138,12 +138,20 @@ class MarketData:
             cursor = stop
 
     def _prepare_range(
-        self, symbol: str, start: datetime, end: datetime
+        self, symbol: str, start: datetime, end: datetime,
+        *, kind: str, timeframe: int,
     ) -> tuple[int, int]:
         start, end = validate_range(start, end)
         if not symbol.strip():
             raise ValueError("symbol cannot be empty")
-        return to_us(start), min(to_us(end), to_us(datetime.now(UTC)))
+        now_us = to_us(datetime.now(UTC))
+        last = min(to_us(end), now_us)
+        if kind == "candles":
+            # Never cache a request containing a still-open candle. Merely
+            # filtering its rows and indexing the full interval would prevent
+            # that candle from being downloaded after it closes.
+            last = min(last, current_bar_open_us(now_us, timeframe))
+        return to_us(start), last
 
     def _fill_cache(
         self, symbol: str, kind: str, timeframe: int, first: int, last: int
@@ -174,7 +182,7 @@ class MarketData:
         self, symbol: str, kind: str, timeframe: int,
         start: datetime, end: datetime,
     ) -> ndarray:
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind=kind, timeframe=timeframe)
         if first >= last:
             from mt5_datahub.arrays import empty
             return empty(kind)
