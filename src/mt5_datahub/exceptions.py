@@ -1,10 +1,14 @@
 class MT5Error(RuntimeError):
-    """Базовая ошибка работы с MetaTrader 5."""
+    """Base MetaTrader 5 integration error."""
 
 
 class MT5ConnectionError(MT5Error):
-    """Ошибка соединения с терминалом или брокером."""
+    """Terminal or broker connection failed."""
 
 
 class MT5RequestError(MT5Error):
-    """Ошибка выполнения запроса рыночных данных."""
+    """Market data request failed."""
+
+
+class StorageError(MT5Error):
+    """Persistent market data storage failed."""
