@@ -54,8 +54,10 @@ class MarketData:
             identity_fn = getattr(self._provider, "source_identity", None)
             if callable(identity_fn):
                 identity = identity_fn()
-                if identity is not None:
+                if isinstance(identity, str):
                     self.cache.bind_source(self.source, identity)
+                elif identity is not None:
+                    raise TypeError("source_identity() must return str or None")
         except Exception:
             if self._owns_provider:
                 self._provider.disconnect()

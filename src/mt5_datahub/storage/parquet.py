@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from typing import cast
 from contextlib import ExitStack
 import sqlite3
 from heapq import heappop, heappush
@@ -24,6 +26,20 @@ from mt5_datahub.arrays import combine, select_range, timestamps_us, TICK_DTYPE,
 from mt5_datahub.exceptions import StorageError
 
 logger = logging.getLogger(__name__)
+
+
+def _field_dtype(dtype: np.dtype, name: str) -> np.dtype:
+    """A structured dtype's dynamically named field, typed for Pyright."""
+    mapping = cast(dict[str, tuple[np.dtype, int]], dtype.fields)
+    return mapping[name][0]
+
+
+@dataclass
+class _MergeCursor:
+    iterator: Iterator[pa.RecordBatch]
+    rows: ndarray
+    pos: int = 0
+    previous: int | None = None
 
 
 class ParquetCache:
@@ -277,58 +293,56 @@ class ParquetCache:
         dtype = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
         timestamp = "time_msc" if kind == "ticks" else "time"
         output_dtype = np.dtype([
-            (name, dtype.fields[name][0]) for name in fields
+            (name, _field_dtype(dtype, name)) for name in fields
         ])
         with ExitStack() as stack:
-            sources: list[dict[str, object]] = []
+            sources: list[_MergeCursor] = []
             heap: list[tuple[int, int]] = []
             def advance(index: int) -> None:
                 state = sources[index]
-                previous = state["previous"]
+                previous = state.previous
                 while True:
-                    rows = state["rows"]
-                    pos = state["pos"]
-                    if isinstance(rows, np.ndarray) and isinstance(pos, int) and pos < len(rows):
+                    rows = state.rows
+                    pos = state.pos
+                    if pos < len(rows):
                         stamp = int(rows[timestamp][pos])
                         if previous is not None and stamp < previous:
                             raise StorageError(
                                 f"Overlapping segment {segments[index][0]} is not sorted"
                             )
-                        state["previous"] = stamp
+                        state.previous = stamp
                         heappush(heap, (stamp, index))
                         return
-                    iterator = state["iterator"]
+                    iterator = state.iterator
                     try:
                         batch = next(iterator)
                     except StopIteration:
                         return
                     selected = select_range(self._array(batch), kind, start, end)
-                    state["rows"] = selected
-                    state["pos"] = 0
+                    state.rows = selected
+                    state.pos = 0
 
             try:
                 for filename, _, _ in segments:
                     file = stack.enter_context(pq.ParquetFile(self.directory / filename))
-                    sources.append({
-                        "iterator": iter(file.iter_batches(
+                    sources.append(_MergeCursor(
+                        iterator=iter(file.iter_batches(
                             batch_size=min(batch_size, 4096), columns=list(projection),
                         )),
-                        "rows": np.empty(0),
-                        "pos": 0,
-                        "previous": None,
-                    })
+                        rows=np.empty(0),
+                    ))
                     advance(len(sources) - 1)
                 output = np.empty(batch_size, dtype=output_dtype)
                 count = 0
                 while heap:
                     _, index = heappop(heap)
                     state = sources[index]
-                    rows = state["rows"]
-                    pos = state["pos"]
+                    rows = state.rows
+                    pos = state.pos
                     for field in fields:
                         output[field][count] = rows[field][pos]
                     count += 1
-                    state["pos"] = pos + 1
+                    state.pos = pos + 1
                     advance(index)
                     if count == batch_size:
                         yield output.copy()
@@ -346,10 +360,10 @@ class ParquetCache:
         columns: tuple[str, ...] | None = None,
         batch_size: int = 65536,
     ) -> Iterator[ndarray]:
-        """Read bounded NumPy batches; iteration follows stored file order.
+        """Read chronologically ordered NumPy batches.
 
-        Files are traversed by interval, then path. The caller may sort
-        across batches if overlapping files were written separately.
+        Adjacent files stream directly; overlapping files use a k-way merge.
+        Equal timestamps and distinct tick rows are always preserved.
         """
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -394,7 +408,7 @@ class ParquetCache:
             return np.concatenate(chunks)
         schema = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
         fields = schema.names if columns is None else columns
-        return np.empty(0, dtype=np.dtype([(name, schema.fields[name][0]) for name in fields]))
+        return np.empty(0, dtype=np.dtype([(name, _field_dtype(schema, name)) for name in fields]))
 
     def verify_segments(
         self, source: str, symbol: str, kind: str, timeframe: int,
@@ -419,7 +433,7 @@ class ParquetCache:
                         raise ValueError("Missing required columns")
                     for name in expected:
                         dtype = actual.field(name).type.to_pandas_dtype()
-                        if np.dtype(dtype) != expected_dtype.fields[name][0]:
+                        if np.dtype(dtype) != expected__field_dtype(dtype, name):
                             raise ValueError(f"Unexpected dtype for {name}: {dtype}")
                     if file.metadata.num_rows < 1:
                         raise ValueError("Indexed file has no rows")
