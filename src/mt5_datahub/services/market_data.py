@@ -31,16 +31,20 @@ class MarketData:
         provider: MT5Provider | None = None,
         tick_chunk: timedelta = timedelta(hours=2),
         candle_chunk: timedelta = timedelta(days=7),
+        max_tick_rows: int = 250_000,
     ) -> None:
         if not source.strip():
             raise ValueError("source must identify broker/server/account")
         if tick_chunk <= timedelta(0) or candle_chunk <= timedelta(0):
             raise ValueError("Chunk durations must be positive")
+        if max_tick_rows < 1:
+            raise ValueError("max_tick_rows must be positive")
         self.source = source
         self.cache = ParquetCache(cache_dir)
         self._provider = provider if provider is not None else MT5Provider()
         self._owns_provider = provider is None
         self._connected = False
+        self._max_tick_rows = max_tick_rows
         self._chunk = {
             "ticks": int(tick_chunk / timedelta(microseconds=1)),
             "candles": int(candle_chunk / timedelta(microseconds=1)),
@@ -255,10 +259,24 @@ class MarketData:
             logger.debug("Cache hit for %s %s", kind, symbol)
         for left, right in gaps:
             cursor = left
+            window = self._chunk[kind]
             while cursor < right:
-                stop = min(cursor + self._chunk[kind], right)
+                stop = min(cursor + window, right)
                 if kind == "ticks":
                     rows = self._provider.get_ticks(symbol, from_us(cursor), from_us(stop))
+                    if len(rows) > self._max_tick_rows:
+                        if stop - cursor > 1_000_000:
+                            window = max(1_000_000, (stop - cursor) // 2)
+                            logger.warning(
+                                "MT5 returned %d ticks (> %d); retrying a shorter interval",
+                                len(rows), self._max_tick_rows,
+                            )
+                            continue
+                        logger.warning(
+                            "MT5 returned %d ticks in <=1 second; can't split "
+                            "without risking loss of equal-millisecond ticks",
+                            len(rows),
+                        )
                 else:
                     rows = self._provider.get_candles(
                         symbol, timeframe, from_us(cursor), from_us(stop)
