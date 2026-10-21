@@ -104,7 +104,7 @@ class MT5Provider:
                             symbol, maxbars,
                         )
                 logger.info(
-                    "MT5 %s %s: %d rows in %.3fs", kind, symbol,
+                    "mt5_request kind=%s symbol=%s rows=%d elapsed_s=%.3f", kind, symbol,
                     len(filtered), perf_counter() - started,
                 )
                 return filtered
@@ -112,7 +112,7 @@ class MT5Provider:
             # Only retry when the terminal actually lost its connection.
             terminal = mt5.terminal_info()
             if attempt == 0 and (terminal is None or not terminal.connected):
-                logger.warning("MT5 %s request interrupted; retrying once", kind)
+                logger.warning("mt5_retry kind=%s symbol=%s attempt=%d", kind, symbol, attempt + 1)
                 continue
             code, message = mt5.last_error()
             raise MT5RequestError(
