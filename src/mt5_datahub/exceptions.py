@@ -10,5 +10,9 @@ class MT5RequestError(MT5Error):
     """Market data request failed."""
 
 
+class MT5HistoryLimitError(MT5RequestError):
+    """MT5 bar response touched Max. bars in chart and may be truncated."""
+
+
 class StorageError(MT5Error):
     """Persistent market data storage failed."""
