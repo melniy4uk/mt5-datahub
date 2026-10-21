@@ -94,6 +94,15 @@ class MT5Provider:
                 result = mt5.copy_rates_range(symbol, timeframe, start, end)
             if result is not None:
                 filtered = select_range(result, kind, to_us(start), to_us(end))
+                if kind == "candles":
+                    terminal = mt5.terminal_info()
+                    maxbars = getattr(terminal, "maxbars", None)
+                    if isinstance(maxbars, int) and maxbars > 0 and len(result) >= maxbars:
+                        logger.warning(
+                            "MT5 candle response for %s reached Max. bars in chart=%d; "
+                            "earlier requested history may be truncated",
+                            symbol, maxbars,
+                        )
                 logger.info(
                     "MT5 %s %s: %d rows in %.3fs", kind, symbol,
                     len(filtered), perf_counter() - started,

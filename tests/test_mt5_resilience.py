@@ -73,6 +73,25 @@ class ProviderRecoveryTests(unittest.TestCase):
                 with self.assertRaises(MT5ConnectionError):
                     provider.get_ticks("x", self.start, self.end)
 
+    def test_candle_limit_is_reported_as_warning(self):
+        import MetaTrader5 as real_mt
+        from mt5_datahub.arrays import CANDLE_DTYPE
+        with patch("mt5_datahub.providers.mt5.mt5") as mt:
+            mt.initialize.return_value = True
+            mt.terminal_info.return_value = SimpleNamespace(connected=True, maxbars=2)
+            mt.symbol_info.return_value = SimpleNamespace(visible=True)
+            bars = np.zeros(2, dtype=CANDLE_DTYPE)
+            bars["time"] = [int(self.start.timestamp()),
+                            int(self.start.timestamp()) + 60]
+            mt.copy_rates_range.return_value = bars
+            with MT5Provider() as provider:
+                with self.assertLogs("mt5_datahub.providers.mt5", level="WARNING") as logs:
+                    provider.get_candles(
+                        "XAUUSD.s", real_mt.TIMEFRAME_M1,
+                        self.start, self.end + timedelta(minutes=2),
+                    )
+            self.assertIn("Max. bars in chart", logs.output[0])
+
 
 class SourceIdentityTests(unittest.TestCase):
     def test_mismatch_rejected(self):
