@@ -69,6 +69,24 @@ with MT5Provider() as provider:
 отключайте его самостоятельно. При неудаче MT5-соединения выполняется одна
 попытка восстановления; запрос повторяется **только при подтверждённом разрыве**.
 
+## Быстрая диагностика без MT5
+
+```python
+from mt5_datahub import inspect_cache
+
+report = inspect_cache(".mt5-datahub", "Bybit-Live-6/account-1",
+                       "XAUUSD.s", start, end)
+print("Ещё не запрошено:", report.unrequested)
+print("Повреждённые файлы:", report.corrupt_segments)
+print("Диапазоны запросов сохранены:", report.saved_request_coverage)
+```
+
+`saved_request_coverage` означает **только наличие записанных запросов**:
+эта проверка не доказывает полноту котировок брокера. `files_readable`
+говорит лишь об отсутствии обнаруженных повреждённых сегментов.
+Для исправления исторических ответов используйте `refresh_ticks()`
+или `refresh_candles()` с явным `confirm=True`.
+
 ## Кэш и его проверка
 
 Кэш разделяется по `source`, символу, виду данных и таймфрейму.
