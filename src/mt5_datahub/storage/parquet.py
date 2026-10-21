@@ -407,7 +407,7 @@ class ParquetCache:
                 return combine(chunks, kind)
             return np.concatenate(chunks)
         schema = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
-        fields = schema.names if columns is None else columns
+        fields = (schema.names or ()) if columns is None else columns
         return np.empty(0, dtype=np.dtype([(name, _field_dtype(schema, name)) for name in fields]))
 
     def verify_segments(
