@@ -1,99 +1,78 @@
 # mt5-datahub
 
-Python library for historical MetaTrader 5 ticks and candles.
+Библиотека Python для загрузки и локального кэширования **тиков и свечей MetaTrader 5**. Данные возвращаются как структурированные массивы NumPy. Примеры настроены на **Bybit-Live-6 / XAUUSD.s**.
 
-## Status
+## Установка
 
-**Experimental development branch:** caching and completeness semantics are
-under development. Do not rely on this branch for production trading or
-complete historical datasets.
-
-## Requirements
-
-Windows with a working MetaTrader 5 terminal, Python 3.13+, and uv.
-
-## Install
+Нужны Windows, Python 3.13+, [uv](https://docs.astral.sh/uv/) и установленный, запущенный MT5 с подключённым счётом.
 
 ```powershell
+git clone https://github.com/melniy4uk/mt5-datahub.git
+cd mt5-datahub
 uv sync
 ```
 
-## Planned API
+## Получение данных
 
 ```python
 from datetime import UTC, datetime
+import MetaTrader5 as mt5
 from mt5_datahub import MarketData
 
-with MarketData(source="broker-server-account") as data:
-    ticks = data.get_ticks(
-        "XAUUSD.s",
-        datetime(2026, 10, 20, tzinfo=UTC),
-        datetime(2026, 10, 21, tzinfo=UTC),
-    )
+start = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)
+end = datetime(2026, 10, 20, 10, 10, tzinfo=UTC)
+
+with MarketData(source="Bybit-Live-6", cache_dir=".mt5-datahub") as data:
+    ticks = data.get_ticks("XAUUSD.s", start, end)
+    candles = data.get_candles("XAUUSD.s", mt5.TIMEFRAME_M1, start, end)
+
+print(len(ticks), len(candles))
+print(ticks.dtype.names, candles.dtype.names)
 ```
 
-`source` must uniquely identify the broker/account history; this value
-is currently supplied manually.
+- `get_ticks(symbol, start, end)` — тики (`time_msc`, `bid`, `ask`, `last`, `volume`, `flags` и др.).
+- `get_candles(symbol, timeframe, start, end)` — **закрытые** свечи OHLC с объёмами и спредом.
+- Времена должны иметь часовой пояс; внутри используются UTC и интервал **[start, end)**. Для свечей границы относятся ко **времени открытия**.
+- `MarketData(..., tick_chunk=timedelta(hours=2), candle_chunk=timedelta(days=7))` позволяет настроить размер запросов. Повторные запросы к сохранённым непустым участкам читаются из кэша; незагруженные участки запрашиваются в MT5.
+- `source` задаётся вручную и должен различать брокера, сервер и набор данных счёта. Для нескольких источников не переиспользуйте один и тот же `source`.
 
-## Limitations
-
-- MT5 does not guarantee complete historical availability.
-- Empty responses are not marked as covered.
-- Partial responses may still contain unknown gaps.
-- Concurrent writers and cache compaction are not implemented.
-- Integration tests require Windows and a running MT5 terminal.
-
-## Historical tick-quality audit
-
-The on-demand audit for `XAUUSD.s` downloads (or reuses) historical data
-and prints stored-request coverage, quote timestamp gaps and repeated timestamps:
-
-```powershell
-uv run python examples/audit_xauusd.py
-```
-
-The report is diagnostic: missing stored request ranges show that some
-intervals have not been cached, while large inter-tick gaps *may* reflect
-weekends, market closures, broker trading sessions or incomplete broker
-history. Neither metric proves that the tick feed is complete.
-
-To audit a custom existing cache without downloading anything:
+Для запросов напрямую к терминалу, **без кэширования**:
 
 ```python
-from datetime import UTC, datetime, timedelta
-from mt5_datahub.quality import audit_ticks
+from mt5_datahub.providers.mt5 import MT5Provider
 
-report = audit_ticks(
-    ".mt5-datahub/audit", "xauusd-s-history", "XAUUSD.s",
-    datetime(2026, 10, 19, tzinfo=UTC),
-    datetime(2026, 10, 21, tzinfo=UTC),
-    gap_threshold=timedelta(minutes=5),
-)
-print(report.format())
+with MT5Provider() as provider:
+    ticks = provider.get_ticks("XAUUSD.s", start, end)
 ```
 
-## Session-aware gap classification (XAUUSD.s)
+Ошибки: `MT5ConnectionError` (терминал/соединение), `MT5RequestError` (запрос), `StorageError` (кэш); все наследуются от `MT5Error` (`mt5_datahub.exceptions`). Некорректные аргументы вызывают `ValueError`.
 
-The quality audit labels each large tick gap as:
+## Кэш и аудит истории
 
-- `session_break`: predominantly outside a **user-supplied** weekly UTC
-  quoting schedule, allowing at most two minutes or 5% of boundary overlap.
-- `unexplained_gap`: substantial part of the gap is inside a configured
-  quoting session. Investigation is required; it is **not proof of data loss**.
-- `unverified_history`: no schedule supplied, so no inference is made.
+Кэш хранит массивы в **Parquet**, индекс интервалов — в **SQLite** (`cache_dir`). Данные разделяются по источнику, символу, типу и таймфрейму. Пустые ответы не отмечаются как загруженные; после прерывания ранее сохранённые сегменты переиспользуются.
 
-Provide your broker's verified **quoting** hours, not generic gold-market
-hours, in a JSON file with an array of `weekday` (Monday=0 through Sunday=6),
-`opens` and `closes` (UTC 24-hour times). Overnight sessions are supported.
+Аудит тиков проверяет непокрытые запросами интервалы, большие паузы между котировками, повторяющиеся миллисекундные метки и порядок времени:
 
 ```powershell
-uv run python examples/audit_xauusd.py --sessions path/to/verified-sessions.json
+uv run python examples/audit_xauusd.py --sessions examples/bybit-live-6-xauusd-s.sessions.json
 ```
 
-`examples/sessions.example.json` is only a syntax illustration; its hours
-are **not verified for any broker**, including `XAUUSD.s`. Without
-`--sessions`, the audit safely uses `unverified_history`.
+`audit_ticks(cache, source, symbol, start, end, gap_threshold=..., max_gaps=..., schedule=...)` из `mt5_datahub.quality` возвращает `TickQualityReport`, а `.format()` — текстовый отчёт.
 
-Broker holidays, daylight-saving time, exceptional closures and live changes
-are not represented by the weekly schedule. Cached-request coverage and these
-labels cannot establish tick-history completeness.
+Классификация разрывов: `session_break` — соответствует настроенному перерыву, `unexplained_gap` — существенная часть внутри сессии, `unverified_history` — расписание не передано. Расписание задаётся через `SessionSchedule` / `WeeklySession` (`mt5_datahub.sessions`) или JSON для примера аудита. Файл Bybit составлен по спецификации инструмента в MT5; **соответствие времени спецификации UTC необходимо подтвердить**. Праздники и исключительные закрытия не учитываются.
+
+## Проверки
+
+```powershell
+uv run python -m unittest discover -s tests -v
+uv run python examples/check_ranges.py
+uv run python examples/check_integration.py
+uv run python examples/stress_xauusd.py
+```
+
+- `tests/` — автоматические тесты SQLite/Parquet, сервиса, аудита и сессий без живого терминала.
+- `check_ranges.py` — границы и разделение тиков; `check_integration.py` — кэш тиков и M1 на MT5; `stress_xauusd.py` — многодневная загрузка и восстановление после имитированного сбоя. Примеры с реальным MT5 используют `XAUUSD.s`.
+
+## Ограничения
+
+**Статус: экспериментальная версия.** Непустой ответ MT5 и отсутствие непокрытых интервалов в индексе **не гарантируют полноту истории брокера**. Большие паузы между тиками не доказывают потерю данных. Одновременная запись нескольких процессов в один кэш не поддерживается; компактизации Parquet и потокового чтения миллионов тиков пока нет. Методы чтения возвращают результат целиком в память. Библиотека не открывает сделки.
