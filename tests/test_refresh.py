@@ -1,6 +1,7 @@
 """Atomic history refresh and orphan handling without a live MT5 terminal."""
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -69,6 +70,26 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual(data.cache.prune_orphans(confirm=True), 1)
             np.testing.assert_array_equal(
                 data.get_ticks("x", start, end), refreshed,
+            )
+
+
+    def test_failed_parquet_write_retains_original_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            start = datetime(2026, 10, 20, 12, tzinfo=UTC)
+            end = start + timedelta(minutes=5)
+            provider = MutableProvider()
+            data = MarketData("test", tmp, provider=provider)
+            original = data.get_ticks("x", start, end)
+            provider.data = [1, 2, 3]
+            with patch(
+                "mt5_datahub.storage.parquet.pq.write_table",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(StorageError, "disk full"):
+                    data.refresh_ticks("x", start, end, confirm=True)
+            self.assertEqual(len(data.cache.orphan_files()), 0)
+            np.testing.assert_array_equal(
+                original, data.get_ticks("x", start, end),
             )
 
     def test_refuse_modified_quotes_by_default(self):

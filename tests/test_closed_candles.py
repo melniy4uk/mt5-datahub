@@ -66,6 +66,14 @@ class CandleCoverageTests(unittest.TestCase):
             datetime(2026, 10, 21, 10, 2, tzinfo=UTC),
         )
 
+    def test_day(self):
+        self.check_rollover(
+            mt5.TIMEFRAME_D1,
+            datetime(2026, 10, 20, tzinfo=UTC),
+            datetime(2026, 10, 21, tzinfo=UTC),
+            datetime(2026, 10, 22, tzinfo=UTC),
+        )
+
     def test_week(self):
         self.check_rollover(
             mt5.TIMEFRAME_W1,
