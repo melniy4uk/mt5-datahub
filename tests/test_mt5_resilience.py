@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mt5_datahub.arrays import TICK_DTYPE
-from mt5_datahub.exceptions import MT5ConnectionError, MT5RequestError, StorageError
+from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, MT5RequestError, StorageError
 from mt5_datahub.providers.mt5 import MT5Provider
 from mt5_datahub.storage.parquet import ParquetCache
 
@@ -73,7 +73,7 @@ class ProviderRecoveryTests(unittest.TestCase):
                 with self.assertRaises(MT5ConnectionError):
                     provider.get_ticks("x", self.start, self.end)
 
-    def test_candle_limit_is_reported_as_warning(self):
+    def test_candle_limit_raises_to_prevent_partial_cache(self):
         import MetaTrader5 as real_mt
         from mt5_datahub.arrays import CANDLE_DTYPE
         with patch("mt5_datahub.providers.mt5.mt5") as mt:
@@ -85,12 +85,11 @@ class ProviderRecoveryTests(unittest.TestCase):
                             int(self.start.timestamp()) + 60]
             mt.copy_rates_range.return_value = bars
             with MT5Provider() as provider:
-                with self.assertLogs("mt5_datahub.providers.mt5", level="WARNING") as logs:
+                with self.assertRaisesRegex(MT5HistoryLimitError, "Max. bars in chart"):
                     provider.get_candles(
                         "XAUUSD.s", real_mt.TIMEFRAME_M1,
                         self.start, self.end + timedelta(minutes=2),
                     )
-            self.assertIn("Max. bars in chart", logs.output[0])
 
 
 class SourceIdentityTests(unittest.TestCase):
