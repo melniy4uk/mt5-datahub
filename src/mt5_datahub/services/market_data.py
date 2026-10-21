@@ -253,10 +253,10 @@ class MarketData:
             return
         gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
         if gaps:
-            logger.info("Cache miss for %s %s (%d intervals)", kind, symbol, len(gaps))
+            logger.info("cache_miss source=%s symbol=%s kind=%s gaps=%d", self.source, symbol, kind, len(gaps))
             self.connect()
         else:
-            logger.debug("Cache hit for %s %s", kind, symbol)
+            logger.debug("cache_hit source=%s symbol=%s kind=%s", self.source, symbol, kind)
         for left, right in gaps:
             cursor = left
             window = self._chunk[kind]
@@ -285,7 +285,7 @@ class MarketData:
                 if len(rows):
                     self.cache.save(self.source, symbol, kind, timeframe, rows, cursor, stop)
                 else:
-                    logger.debug("No %s for %s in [%s, %s)", kind, symbol, cursor, stop)
+                    logger.debug("cache_empty_response source=%s symbol=%s kind=%s start_us=%d end_us=%d", self.source, symbol, kind, cursor, stop)
                 cursor = stop
 
     def _get(
