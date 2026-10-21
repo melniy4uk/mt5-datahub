@@ -60,8 +60,10 @@ class ProviderRecoveryTests(unittest.TestCase):
             mt.copy_ticks_range.return_value = None
             mt.last_error.return_value = (-7, "failed")
             with MT5Provider() as provider:
-                with self.assertRaises(MT5RequestError):
-                    provider.get_ticks("x", self.start, self.end)
+                with self.assertLogs("mt5_datahub.providers.mt5", level="ERROR") as logs:
+                    with self.assertRaises(MT5RequestError):
+                        provider.get_ticks("x", self.start, self.end)
+            self.assertIn("mt5_request_failed", logs.output[0])
             self.assertEqual(mt.copy_ticks_range.call_count, 1)
 
     def test_reconnection_fails_cleanly(self):

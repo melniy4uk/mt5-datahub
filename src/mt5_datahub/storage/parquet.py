@@ -174,6 +174,10 @@ class ParquetCache:
                 source, symbol, kind, len(selected), start, end,
             )
         except Exception as exc:
+            logger.error(
+                "cache_save_failed source=%s symbol=%s kind=%s error_type=%s",
+                source, symbol, kind, type(exc).__name__,
+            )
             temporary.unlink(missing_ok=True)
             # Do not remove destination: transaction outcome might be uncertain.
             raise StorageError(f"Cannot save Parquet chunk {relative}: {exc}") from exc
