@@ -114,6 +114,10 @@ class MT5Provider:
                 logger.warning("mt5_retry kind=%s symbol=%s attempt=%d", kind, symbol, attempt + 1)
                 continue
             code, message = mt5.last_error()
+            logger.error(
+                "mt5_request_failed kind=%s symbol=%s code=%d",
+                kind, symbol, code,
+            )
             raise MT5RequestError(
                 f"MT5 {kind} request for {symbol} failed [{code}]: {message}"
             )
