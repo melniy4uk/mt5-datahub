@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import ExitStack
 import sqlite3
+from heapq import heappop, heappush
 from contextlib import contextmanager
 from collections.abc import Iterator
 from pathlib import Path
@@ -262,6 +264,82 @@ class ParquetCache:
             result[name] = values
         return result
 
+    def _merge_overlapping(
+        self, segments: list[tuple[str, int, int]], kind: str,
+        start: int, end: int, fields: tuple[str, ...],
+        projection: tuple[str, ...], batch_size: int,
+    ) -> Iterator[ndarray]:
+        """K-way merge sorted Parquet segments with bounded per-file buffers.
+
+        All distinct tick records are preserved, including equal timestamps.
+        Memory is O(number of overlapping files * min(batch_size, 4096)).
+        """
+        dtype = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
+        timestamp = "time_msc" if kind == "ticks" else "time"
+        output_dtype = np.dtype([
+            (name, dtype.fields[name][0]) for name in fields
+        ])
+        with ExitStack() as stack:
+            sources: list[dict[str, object]] = []
+            heap: list[tuple[int, int]] = []
+            def advance(index: int) -> None:
+                state = sources[index]
+                previous = state["previous"]
+                while True:
+                    rows = state["rows"]
+                    pos = state["pos"]
+                    if isinstance(rows, np.ndarray) and isinstance(pos, int) and pos < len(rows):
+                        stamp = int(rows[timestamp][pos])
+                        if previous is not None and stamp < previous:
+                            raise StorageError(
+                                f"Overlapping segment {segments[index][0]} is not sorted"
+                            )
+                        state["previous"] = stamp
+                        heappush(heap, (stamp, index))
+                        return
+                    iterator = state["iterator"]
+                    try:
+                        batch = next(iterator)
+                    except StopIteration:
+                        return
+                    selected = select_range(self._array(batch), kind, start, end)
+                    state["rows"] = selected
+                    state["pos"] = 0
+
+            try:
+                for filename, _, _ in segments:
+                    file = stack.enter_context(pq.ParquetFile(self.directory / filename))
+                    sources.append({
+                        "iterator": iter(file.iter_batches(
+                            batch_size=min(batch_size, 4096), columns=list(projection),
+                        )),
+                        "rows": np.empty(0),
+                        "pos": 0,
+                        "previous": None,
+                    })
+                    advance(len(sources) - 1)
+                output = np.empty(batch_size, dtype=output_dtype)
+                count = 0
+                while heap:
+                    _, index = heappop(heap)
+                    state = sources[index]
+                    rows = state["rows"]
+                    pos = state["pos"]
+                    for field in fields:
+                        output[field][count] = rows[field][pos]
+                    count += 1
+                    state["pos"] = pos + 1
+                    advance(index)
+                    if count == batch_size:
+                        yield output.copy()
+                        count = 0
+                if count:
+                    yield output[:count].copy()
+            except StorageError:
+                raise
+            except Exception as exc:
+                raise StorageError(f"Cannot merge overlapping Parquet data: {exc}") from exc
+
     def iter_batches(
         self, source: str, symbol: str, kind: str, timeframe: int,
         start: int, end: int, *,
@@ -281,9 +359,14 @@ class ParquetCache:
         if not fields or len(set(fields)) != len(fields) or any(x not in names for x in fields):
             raise ValueError("Unknown or duplicated requested column")
         timestamp = "time_msc" if kind == "ticks" else "time"
-        scale = 1000 if kind == "ticks" else 1000000
         projection = tuple(dict.fromkeys((*fields, timestamp)))
-        for filename, _, _ in self._segments_for(source, symbol, kind, timeframe, start, end):
+        segments = self._segments_for(source, symbol, kind, timeframe, start, end)
+        if any(a[2] > b[1] for a, b in zip(segments, segments[1:])):
+            yield from self._merge_overlapping(
+                segments, kind, start, end, fields, projection, batch_size,
+            )
+            return
+        for filename, _, _ in segments:
             try:
                 with pq.ParquetFile(self.directory / filename) as file:
                     for batch in file.iter_batches(batch_size=batch_size, columns=list(projection)):
