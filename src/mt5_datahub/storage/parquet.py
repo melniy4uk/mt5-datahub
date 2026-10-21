@@ -178,6 +178,59 @@ class ParquetCache:
         fields = schema.names if columns is None else columns
         return np.empty(0, dtype=np.dtype([(name, schema.fields[name][0]) for name in fields]))
 
+    def verify_segments(
+        self, source: str, symbol: str, kind: str, timeframe: int,
+        start: int, end: int,
+    ) -> dict[str, str]:
+        """Validate indexed files by reading all row groups; never change data.
+
+        Returns {relative_path: problem}. This detects absent, unreadable or
+        malformed files, but not historically missing broker quotes.
+        """
+        issues: dict[str, str] = {}
+        expected = set((TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE).names or ())
+        for filename, left, right in self._segments_for(
+            source, symbol, kind, timeframe, start, end
+        ):
+            try:
+                file = pq.ParquetFile(self.directory / filename)
+                with file:
+                    if not expected.issubset(file.schema_arrow.names):
+                        raise ValueError("Missing required columns")
+                    if file.metadata.num_rows < 1:
+                        raise ValueError("Indexed file has no rows")
+                    count = 0
+                    for batch in file.iter_batches(batch_size=65_536):
+                        count += batch.num_rows
+                    if count != file.metadata.num_rows:
+                        raise ValueError("Row count differs from Parquet metadata")
+            except Exception as exc:
+                issues[filename] = f"{type(exc).__name__}: {exc}"
+        return issues
+
+    def invalidate_corrupt(
+        self, source: str, symbol: str, kind: str, timeframe: int,
+        start: int, end: int, *,
+        confirm: bool = False,
+    ) -> dict[str, str]:
+        """Detach broken segments from SQLite so later calls can download them.
+
+        Data files are NEVER deleted, including corrupt ones. Requires explicit
+        confirmation and exclusive access to the writer.
+        """
+        issues = self.verify_segments(source, symbol, kind, timeframe, start, end)
+        if issues and not confirm:
+            raise StorageError("Corrupt segments found; pass confirm=True to invalidate")
+        if issues:
+            with self._db() as db:
+                for filename in issues:
+                    db.execute(
+                        """DELETE FROM segments WHERE path=? AND source=? AND symbol=?
+                           AND kind=? AND timeframe=?""",
+                        (filename, source, symbol, kind, timeframe)
+                    )
+        return issues
+
     def compact(
         self, source: str, symbol: str, kind: str, timeframe: int,
         start: int, end: int, *, max_rows: int = 2_000_000,
