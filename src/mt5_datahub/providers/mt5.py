@@ -98,6 +98,14 @@ class MT5Provider:
         return start.astimezone(UTC), end.astimezone(UTC)
 
     @staticmethod
+    def _to_unix_us(value: datetime) -> int:
+        """Преобразовать UTC datetime в микросекунды Unix."""
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        delta = value - epoch
+
+        return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+    @staticmethod
     def _ensure_symbol(symbol: str) -> None:
         """Проверить инструмент и его доступность."""
         if not symbol.strip():
@@ -159,7 +167,15 @@ class MT5Provider:
         logger.info("MT5: запрос тиков %s: %s — %s", symbol, start, end)
 
         ticks = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_ALL)
-        return self._handle_result(ticks, symbol, "тиков")
+        ticks = self._handle_result(ticks, symbol, "тиков")
+
+        start_us = self._to_unix_us(start)
+        end_us = self._to_unix_us(end)
+
+        time_us = ticks["time_msc"] * 1000
+
+        mask = (time_us >= start_us) & (time_us < end_us)
+        return ticks[mask]
 
     def get_candles(
         self, symbol: str, timeframe: int, start: datetime, end: datetime
@@ -179,4 +195,12 @@ class MT5Provider:
         )
 
         candles = mt5.copy_rates_range(symbol, timeframe, start, end)
-        return self._handle_result(candles, symbol, "свечей")
+        candles = self._handle_result(candles, symbol, "свечей")
+
+        start_us = self._to_unix_us(start)
+        end_us = self._to_unix_us(end)
+
+        time_us = candles["time"] * 1_000_000
+
+        mask = (time_us >= start_us) & (time_us < end_us)
+        return candles[mask]
