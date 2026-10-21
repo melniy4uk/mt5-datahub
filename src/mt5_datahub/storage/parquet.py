@@ -20,7 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from numpy import ndarray
 
-from mt5_datahub.arrays import combine, empty, select_range, timestamps_us, TICK_DTYPE, CANDLE_DTYPE
+from mt5_datahub.arrays import combine, select_range, timestamps_us, TICK_DTYPE, CANDLE_DTYPE
 from mt5_datahub.exceptions import StorageError
 
 logger = logging.getLogger(__name__)

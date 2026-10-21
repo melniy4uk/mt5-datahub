@@ -9,7 +9,6 @@ import numpy as np
 
 from mt5_datahub import MarketData
 from mt5_datahub.arrays import CANDLE_DTYPE
-from mt5_datahub.timeutils import to_us
 
 
 class CandleProvider:
