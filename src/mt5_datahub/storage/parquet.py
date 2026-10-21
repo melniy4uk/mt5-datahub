@@ -433,7 +433,7 @@ class ParquetCache:
                         raise ValueError("Missing required columns")
                     for name in expected:
                         dtype = actual.field(name).type.to_pandas_dtype()
-                        if np.dtype(dtype) != expected__field_dtype(dtype, name):
+                        if np.dtype(dtype) != _field_dtype(expected_dtype, name):
                             raise ValueError(f"Unexpected dtype for {name}: {dtype}")
                     if file.metadata.num_rows < 1:
                         raise ValueError("Indexed file has no rows")
