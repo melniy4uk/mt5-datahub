@@ -5,6 +5,8 @@ from typing import Self
 import MetaTrader5 as mt5
 from numpy import ndarray
 
+from mt5_datahub.exceptions import MT5ConnectionError
+
 logger = logging.getLogger(__name__)
 
 VALID_TIMEFRAMES = frozenset(
@@ -48,7 +50,7 @@ class MT5Provider:
 
         if not mt5.initialize():
             code, message = mt5.last_error()
-            raise ConnectionError(f"MT5: ошибка подключения [{code}]: {message}")
+            raise MT5ConnectionError(f"MT5: ошибка подключения [{code}]: {message}")
 
         self._connected = True
         logger.info("MT5: соединение установлено")
@@ -72,19 +74,19 @@ class MT5Provider:
     def _check_connection(self) -> None:
         """Проверить состояние терминала и соединения."""
         if not self._connected:
-            raise ConnectionError("MT5: сначала вызовите connect()")
+            raise MT5ConnectionError("MT5: сначала вызовите connect()")
 
         terminal = mt5.terminal_info()
 
         if terminal is None:
             self._connected = False
             code, message = mt5.last_error()
-            raise ConnectionError(
+            raise MT5ConnectionError(
                 f"MT5: связь с терминалом потеряна [{code}]: {message}"
             )
 
         if not terminal.connected:
-            raise ConnectionError("MT5: нет соединения с сервером брокера")
+            raise MT5ConnectionError("MT5: нет соединения с сервером брокера")
 
     @staticmethod
     def _validate_dates(start: datetime, end: datetime) -> tuple[datetime, datetime]:
