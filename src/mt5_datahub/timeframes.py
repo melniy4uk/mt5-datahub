@@ -1,5 +1,5 @@
 """MT5 timeframe lengths and closed-bar checks."""
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import MetaTrader5 as mt5
 import numpy as np
@@ -36,3 +36,21 @@ def closed_only(rows: ndarray, timeframe: int, now_us: int) -> ndarray:
         dtype=bool, count=len(rows),
     )
     return rows[mask]
+
+
+def current_bar_open_us(now_us: int, timeframe: int) -> int:
+    """UTC start of the forming bar (exclusive upper bound for closed bars).
+
+    The returned instant is *not* considered historical coverage yet. For
+    weekly bars the MT5 UTC week begins Monday; month bars begin on day 1.
+    """
+    if timeframe not in VALID:
+        raise ValueError(f"Unsupported MT5 timeframe: {timeframe}")
+    now = datetime.fromtimestamp(now_us / 1_000_000, UTC)
+    if timeframe == mt5.TIMEFRAME_MN1:
+        return to_us(datetime(now.year, now.month, 1, tzinfo=UTC))
+    if timeframe == mt5.TIMEFRAME_W1:
+        monday = datetime(now.year, now.month, now.day, tzinfo=UTC)
+        return to_us(monday - timedelta(days=now.weekday()))
+    seconds = SECONDS[timeframe]
+    return (now_us // (seconds * 1_000_000)) * seconds * 1_000_000

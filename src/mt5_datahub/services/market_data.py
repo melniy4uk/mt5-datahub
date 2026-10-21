@@ -11,7 +11,7 @@ from numpy import ndarray
 
 from mt5_datahub.providers.mt5 import MT5Provider
 from mt5_datahub.storage.parquet import ParquetCache
-from mt5_datahub.timeframes import VALID, closed_only
+from mt5_datahub.timeframes import VALID, closed_only, current_bar_open_us
 from mt5_datahub.timeutils import from_us, to_us, validate_range
 
 logger = logging.getLogger(__name__)
@@ -31,25 +31,42 @@ class MarketData:
         provider: MT5Provider | None = None,
         tick_chunk: timedelta = timedelta(hours=2),
         candle_chunk: timedelta = timedelta(days=7),
+        max_tick_rows: int = 250_000,
     ) -> None:
         if not source.strip():
             raise ValueError("source must identify broker/server/account")
         if tick_chunk <= timedelta(0) or candle_chunk <= timedelta(0):
             raise ValueError("Chunk durations must be positive")
+        if max_tick_rows < 1:
+            raise ValueError("max_tick_rows must be positive")
         self.source = source
         self.cache = ParquetCache(cache_dir)
         self._provider = provider if provider is not None else MT5Provider()
         self._owns_provider = provider is None
         self._connected = False
+        self._max_tick_rows = max_tick_rows
         self._chunk = {
             "ticks": int(tick_chunk / timedelta(microseconds=1)),
             "candles": int(candle_chunk / timedelta(microseconds=1)),
         }
 
     def connect(self) -> None:
-        if not self._connected:
-            self._provider.connect()
-            self._connected = True
+        if self._connected:
+            return
+        self._provider.connect()
+        try:
+            identity_fn = getattr(self._provider, "source_identity", None)
+            if callable(identity_fn):
+                identity = identity_fn()
+                if isinstance(identity, str):
+                    self.cache.bind_source(self.source, identity)
+                elif identity is not None:
+                    raise TypeError("source_identity() must return str or None")
+        except Exception:
+            if self._owns_provider:
+                self._provider.disconnect()
+            raise
+        self._connected = True
 
     def disconnect(self) -> None:
         if self._connected and self._owns_provider:
@@ -75,6 +92,82 @@ class MarketData:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         return self._get(symbol, "candles", timeframe, start, end)
 
+    def refresh_ticks(
+        self, symbol: str, start: datetime, end: datetime, *,
+        confirm: bool = False, allow_changes: bool = False,
+        max_rows: int = 2_000_000,
+    ) -> ndarray:
+        """Recheck history against MT5 before atomically replacing its cache."""
+        return self._refresh(
+            symbol, "ticks", 0, start, end,
+            confirm=confirm, allow_changes=allow_changes, max_rows=max_rows,
+        )
+
+    def refresh_candles(
+        self, symbol: str, timeframe: int, start: datetime, end: datetime, *,
+        confirm: bool = False, allow_changes: bool = False,
+        max_rows: int = 2_000_000,
+    ) -> ndarray:
+        if timeframe not in VALID:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+        return self._refresh(
+            symbol, "candles", timeframe, start, end,
+            confirm=confirm, allow_changes=allow_changes, max_rows=max_rows,
+        )
+
+    def _refresh(
+        self, symbol: str, kind: str, timeframe: int,
+        start: datetime, end: datetime, *,
+        confirm: bool, allow_changes: bool, max_rows: int,
+    ) -> ndarray:
+        from mt5_datahub.arrays import combine, empty
+        from mt5_datahub.exceptions import StorageError
+
+        if not confirm:
+            raise StorageError("refresh requires confirm=True")
+        if max_rows < 1:
+            raise ValueError("max_rows must be positive")
+        first, last = self._prepare_range(
+            symbol, start, end, kind=kind, timeframe=timeframe,
+        )
+        if first >= last:
+            return empty(kind)
+        # Index rows are indivisible: expand to include the entire stored
+        # segment before replacing, otherwise data outside the selected
+        # interval would disappear from the index.
+        affected = self.cache._segments_for(
+            self.source, symbol, kind, timeframe, first, last,
+        )
+        if affected:
+            first = min(first, *(left for _, left, _ in affected))
+            last = max(last, *(right for _, _, right in affected))
+        self.connect()
+        parts: list[ndarray] = []
+        count = 0
+        cursor = first
+        while cursor < last:
+            stop = min(cursor + self._chunk[kind], last)
+            if kind == "ticks":
+                rows = self._provider.get_ticks(symbol, from_us(cursor), from_us(stop))
+            else:
+                rows = self._provider.get_candles(
+                    symbol, timeframe, from_us(cursor), from_us(stop),
+                )
+                rows = closed_only(rows, timeframe, to_us(datetime.now(UTC)))
+            count += len(rows)
+            if count > max_rows:
+                raise StorageError("Refresh exceeds max_rows; select a shorter interval")
+            parts.append(rows)
+            cursor = stop
+        merged = combine(parts, kind)
+        # Replacement is a single transaction; old index/files remain intact
+        # if validation or the MT5 download fails.
+        self.cache.replace(
+            self.source, symbol, kind, timeframe, merged, first, last,
+            confirm=True, allow_changes=allow_changes,
+        )
+        return self.cache.read(self.source, symbol, kind, timeframe, first, last)
+
     def iter_ticks(
         self,
         symbol: str,
@@ -93,7 +186,7 @@ class MarketData:
         """
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind="ticks", timeframe=0)
         if first >= last:
             return
         self._fill_cache(symbol, "ticks", 0, first, last)
@@ -126,7 +219,7 @@ class MarketData:
             or any(name not in names for name in columns)
         ):
             raise ValueError("Unknown or duplicated requested column")
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind="ticks", timeframe=0)
         cursor = first
         while cursor < last:
             stop = min(cursor + self._chunk["ticks"], last)
@@ -138,12 +231,20 @@ class MarketData:
             cursor = stop
 
     def _prepare_range(
-        self, symbol: str, start: datetime, end: datetime
+        self, symbol: str, start: datetime, end: datetime,
+        *, kind: str, timeframe: int,
     ) -> tuple[int, int]:
         start, end = validate_range(start, end)
         if not symbol.strip():
             raise ValueError("symbol cannot be empty")
-        return to_us(start), min(to_us(end), to_us(datetime.now(UTC)))
+        now_us = to_us(datetime.now(UTC))
+        last = min(to_us(end), now_us)
+        if kind == "candles":
+            # Never cache a request containing a still-open candle. Merely
+            # filtering its rows and indexing the full interval would prevent
+            # that candle from being downloaded after it closes.
+            last = min(last, current_bar_open_us(now_us, timeframe))
+        return to_us(start), last
 
     def _fill_cache(
         self, symbol: str, kind: str, timeframe: int, first: int, last: int
@@ -152,13 +253,30 @@ class MarketData:
             return
         gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
         if gaps:
+            logger.info("Cache miss for %s %s (%d intervals)", kind, symbol, len(gaps))
             self.connect()
+        else:
+            logger.debug("Cache hit for %s %s", kind, symbol)
         for left, right in gaps:
             cursor = left
+            window = self._chunk[kind]
             while cursor < right:
-                stop = min(cursor + self._chunk[kind], right)
+                stop = min(cursor + window, right)
                 if kind == "ticks":
                     rows = self._provider.get_ticks(symbol, from_us(cursor), from_us(stop))
+                    if len(rows) > self._max_tick_rows:
+                        if stop - cursor > 1_000_000:
+                            window = max(1_000_000, (stop - cursor) // 2)
+                            logger.warning(
+                                "MT5 returned %d ticks (> %d); retrying a shorter interval",
+                                len(rows), self._max_tick_rows,
+                            )
+                            continue
+                        logger.warning(
+                            "MT5 returned %d ticks in <=1 second; can't split "
+                            "without risking loss of equal-millisecond ticks",
+                            len(rows),
+                        )
                 else:
                     rows = self._provider.get_candles(
                         symbol, timeframe, from_us(cursor), from_us(stop)
@@ -174,7 +292,7 @@ class MarketData:
         self, symbol: str, kind: str, timeframe: int,
         start: datetime, end: datetime,
     ) -> ndarray:
-        first, last = self._prepare_range(symbol, start, end)
+        first, last = self._prepare_range(symbol, start, end, kind=kind, timeframe=timeframe)
         if first >= last:
             from mt5_datahub.arrays import empty
             return empty(kind)

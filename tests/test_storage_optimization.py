@@ -68,6 +68,31 @@ class OptimizedCacheTests(unittest.TestCase):
                 list(cache.iter_batches("b", "XAUUSD.s", "ticks", 0,
                                         0, 10, batch_size=0))
 
+    def test_overlapping_segments_stream_in_chronological_order(self):
+        with tempfile.TemporaryDirectory() as path:
+            cache = ParquetCache(path)
+            cache.save("broker", "XAUUSD.s", "ticks", 0,
+                       self.rows([1000, 7000], [1, 7]), 1_000_000, 9_000_000)
+            cache.save("broker", "XAUUSD.s", "ticks", 0,
+                       self.rows([6000, 7000, 9000], [6, 8, 9]),
+                       5_000_000, 10_000_000)
+            streamed = list(cache.iter_batches(
+                "broker", "XAUUSD.s", "ticks", 0,
+                1_000_000, 10_000_000, batch_size=2,
+                columns=("time_msc", "bid"),
+            ))
+            self.assertTrue(all(len(b) <= 2 for b in streamed))
+            combined = np.concatenate(streamed)
+            self.assertEqual(combined["time_msc"].tolist(),
+                             [1000, 6000, 7000, 7000, 9000])
+            self.assertEqual(combined["bid"].tolist(), [1, 6, 7, 8, 9])
+            np.testing.assert_array_equal(
+                cache.read("broker", "XAUUSD.s", "ticks", 0,
+                           1_000_000, 10_000_000,
+                           columns=("time_msc", "bid")),
+                combined,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

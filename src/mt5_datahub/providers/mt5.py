@@ -1,6 +1,7 @@
 """MetaTrader 5 adapter. No caching or filesystem responsibilities."""
 import logging
 from datetime import datetime
+from time import perf_counter
 from typing import Self
 
 import MetaTrader5 as mt5
@@ -45,12 +46,29 @@ class MT5Provider:
         if not self._connected:
             raise MT5ConnectionError("Call connect() before requesting data")
         terminal = mt5.terminal_info()
-        if terminal is None:
-            self._connected = False
+        if terminal is not None and terminal.connected:
+            return
+        logger.warning("MT5 connection lost; attempting one reinitialization")
+        mt5.shutdown()
+        self._connected = False
+        if not mt5.initialize():
             code, message = mt5.last_error()
-            raise MT5ConnectionError(f"MT5 terminal unavailable [{code}]: {message}")
-        if not terminal.connected:
-            raise MT5ConnectionError("MT5 terminal is disconnected from broker")
+            raise MT5ConnectionError(f"MT5 reconnect failed [{code}]: {message}")
+        terminal = mt5.terminal_info()
+        if terminal is None or not terminal.connected:
+            mt5.shutdown()
+            code, message = mt5.last_error()
+            raise MT5ConnectionError(f"MT5 broker still disconnected [{code}]: {message}")
+        self._connected = True
+        logger.info("MT5 connection restored")
+
+    @staticmethod
+    def source_identity() -> str | None:
+        """Broker account/server fingerprint, never an access token."""
+        account = mt5.account_info()
+        if account is None:
+            return None
+        return f"{account.server}/{account.login}"
 
     @staticmethod
     def _ensure_symbol(symbol: str) -> None:
@@ -66,18 +84,41 @@ class MT5Provider:
 
     def _request(self, symbol: str, start: datetime, end: datetime, kind: str, timeframe: int = 0) -> ndarray:
         start, end = validate_range(start, end)
-        self._check_connection()
-        self._ensure_symbol(symbol)
-        if kind == "ticks":
-            result = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_ALL)
-        else:
-            result = mt5.copy_rates_range(symbol, timeframe, start, end)
-        if result is None:
+        started = perf_counter()
+        for attempt in range(2):
+            self._check_connection()
+            self._ensure_symbol(symbol)
+            if kind == "ticks":
+                result = mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_ALL)
+            else:
+                result = mt5.copy_rates_range(symbol, timeframe, start, end)
+            if result is not None:
+                filtered = select_range(result, kind, to_us(start), to_us(end))
+                if kind == "candles":
+                    terminal = mt5.terminal_info()
+                    maxbars = getattr(terminal, "maxbars", None)
+                    if isinstance(maxbars, int) and maxbars > 0 and len(result) >= maxbars:
+                        logger.warning(
+                            "MT5 candle response for %s reached Max. bars in chart=%d; "
+                            "earlier requested history may be truncated",
+                            symbol, maxbars,
+                        )
+                logger.info(
+                    "MT5 %s %s: %d rows in %.3fs", kind, symbol,
+                    len(filtered), perf_counter() - started,
+                )
+                return filtered
+            # Do not retry bad symbols, invalid dates or unavailable history.
+            # Only retry when the terminal actually lost its connection.
+            terminal = mt5.terminal_info()
+            if attempt == 0 and (terminal is None or not terminal.connected):
+                logger.warning("MT5 %s request interrupted; retrying once", kind)
+                continue
             code, message = mt5.last_error()
-            raise MT5RequestError(f"MT5 {kind} request for {symbol} failed [{code}]: {message}")
-        filtered = select_range(result, kind, to_us(start), to_us(end))
-        logger.info("MT5 %s %s: %d rows", kind, symbol, len(filtered))
-        return filtered
+            raise MT5RequestError(
+                f"MT5 {kind} request for {symbol} failed [{code}]: {message}"
+            )
+        raise MT5RequestError("MT5 request retry exhausted")
 
     def get_ticks(self, symbol: str, start: datetime, end: datetime) -> ndarray:
         return self._request(symbol, start, end, "ticks")
