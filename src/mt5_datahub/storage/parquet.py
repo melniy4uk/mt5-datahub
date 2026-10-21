@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from numpy import ndarray
 
-from mt5_datahub.arrays import combine, empty, select_range, TICK_DTYPE, CANDLE_DTYPE
+from mt5_datahub.arrays import combine, empty, select_range, timestamps_us, TICK_DTYPE, CANDLE_DTYPE
 from mt5_datahub.exceptions import StorageError
 
 
@@ -92,7 +92,7 @@ class ParquetCache:
             raise ValueError("Invalid interval")
         if rows.dtype.names is None:
             raise ValueError("Expected structured NumPy array")
-        selected = select_range(rows, kind, start, end)
+        selected = combine([select_range(rows, kind, start, end)], kind)
         # Empty responses are not cached: the broker may populate them later.
         if len(selected) == 0:
             return
@@ -182,26 +182,43 @@ class ParquetCache:
         self, source: str, symbol: str, kind: str, timeframe: int,
         start: int, end: int,
     ) -> dict[str, str]:
-        """Validate indexed files by reading all row groups; never change data.
+        """Read and validate indexed files without changing the cache.
 
-        Returns {relative_path: problem}. This detects absent, unreadable or
-        malformed files, but not historically missing broker quotes.
+        Checks the physical schema, stored row count, monotonic timestamps,
+        and that the stored timestamps belong to the indexed half-open range.
+        This cannot establish whether MT5 returned every broker quote.
         """
         issues: dict[str, str] = {}
-        expected = set((TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE).names or ())
+        expected_dtype = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
+        expected = expected_dtype.names or ()
         for filename, left, right in self._segments_for(
             source, symbol, kind, timeframe, start, end
         ):
             try:
-                file = pq.ParquetFile(self.directory / filename)
-                with file:
-                    if not expected.issubset(file.schema_arrow.names):
+                with pq.ParquetFile(self.directory / filename) as file:
+                    actual = file.schema_arrow
+                    if not set(expected).issubset(actual.names):
                         raise ValueError("Missing required columns")
+                    for name in expected:
+                        dtype = actual.field(name).type.to_pandas_dtype()
+                        if np.dtype(dtype) != expected_dtype.fields[name][0]:
+                            raise ValueError(f"Unexpected dtype for {name}: {dtype}")
                     if file.metadata.num_rows < 1:
                         raise ValueError("Indexed file has no rows")
                     count = 0
-                    for batch in file.iter_batches(batch_size=65_536):
-                        count += batch.num_rows
+                    previous: int | None = None
+                    for batch in file.iter_batches(batch_size=65_536, columns=list(expected)):
+                        rows = self._array(batch)
+                        stamps = timestamps_us(rows, kind)
+                        if len(stamps):
+                            if stamps[0] < left or stamps[-1] >= right:
+                                raise ValueError("Timestamps exceed indexed interval")
+                            if previous is not None and stamps[0] < previous:
+                                raise ValueError("Timestamps not chronological across batches")
+                            if np.any(np.diff(stamps) < 0):
+                                raise ValueError("Timestamps not chronological in segment")
+                            previous = int(stamps[-1])
+                        count += len(rows)
                     if count != file.metadata.num_rows:
                         raise ValueError("Row count differs from Parquet metadata")
             except Exception as exc:

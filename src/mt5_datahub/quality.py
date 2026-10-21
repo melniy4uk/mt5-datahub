@@ -5,6 +5,7 @@ Large quote gaps are suspicious, not proof of missing market data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from heapq import heappush, heappushpop
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -98,37 +99,84 @@ def audit_ticks(
     first, last = to_us(start), to_us(end)
     raw_segments = storage._segments_for(source, symbol, "ticks", 0, first, last)
     uncovered_us = storage.missing(source, symbol, "ticks", 0, first, last)
-    rows = storage.read(source, symbol, "ticks", 0, first, last)
-    times_ms = rows["time_msc"].astype(np.int64)
-    deltas_ms = np.diff(times_ms)
-    min_gap_ms = gap_threshold / timedelta(milliseconds=1)
-    candidate_indices = np.flatnonzero(deltas_ms > min_gap_ms)
-    # Show longest gaps first, then chronological order for equal lengths.
-    order = sorted(candidate_indices.tolist(), key=lambda i: (-int(deltas_ms[i]), i))
-    selected = order[:max_gaps]
+    threshold_ms = gap_threshold / timedelta(milliseconds=1)
 
+    # Read one time column in bounded batches. Maintain only the longest
+    # max_gaps pauses, instead of assembling millions of full tick records.
+    # Historical overlapping segments can be out of order: fall back to the
+    # full sorted read only in that exceptional case.
+    candidates: list[tuple[int, int, int, int]] = []
+    count = repeated = disorder = 0
+    previous: int | None = None
+    def scan(times: np.ndarray) -> None:
+        nonlocal count, repeated, disorder, previous
+        if not len(times):
+            return
+        if previous is None:
+            lefts = times[:-1]
+            rights = times[1:]
+            indices_start = count
+        else:
+            lefts = np.concatenate(([previous], times[:-1]))
+            rights = times
+            indices_start = count - 1
+        deltas = rights.astype(np.int64) - lefts.astype(np.int64)
+        repeated += int(np.count_nonzero(deltas == 0))
+        disorder += int(np.count_nonzero(deltas < 0))
+        if max_gaps:
+            for idx in np.flatnonzero(deltas > threshold_ms):
+                duration = int(deltas[idx])
+                # Earlier pauses win ties; keep the largest durations.
+                entry = (duration, -(indices_start + int(idx)),
+                         int(lefts[idx]), int(rights[idx]))
+                if len(candidates) < max_gaps:
+                    heappush(candidates, entry)
+                elif entry > candidates[0]:
+                    heappushpop(candidates, entry)
+        count += len(times)
+        previous = int(times[-1])
+
+    for batch in storage.iter_batches(
+        source, symbol, "ticks", 0, first, last,
+        columns=("time_msc",), batch_size=65_536,
+    ):
+        scan(batch["time_msc"])
+
+    raw_disorder = disorder
+    if raw_disorder:
+        # Old overlapping files may not be globally ordered. Compute quote
+        # gaps from a sorted view, but still report physical-order anomalies.
+        sorted_times = storage.read(
+            source, symbol, "ticks", 0, first, last,
+            columns=("time_msc",),
+        )["time_msc"]
+        candidates.clear()
+        count = repeated = disorder = 0
+        previous = None
+        scan(sorted_times)
+
+    selected = sorted(candidates, key=lambda item: (-item[0], -item[1]))
     gaps = tuple(
         TickGap(
-            before=from_us(int(times_ms[i]) * 1000),
-            after=from_us(int(times_ms[i + 1]) * 1000),
-            seconds=float(deltas_ms[i]) / 1000,
+            before=from_us(left_ms * 1000),
+            after=from_us(right_ms * 1000),
+            seconds=duration / 1000,
             classification=classify_gap(
-                from_us(int(times_ms[i]) * 1000),
-                from_us(int(times_ms[i + 1]) * 1000), schedule
+                from_us(left_ms * 1000), from_us(right_ms * 1000), schedule
             ),
         )
-        for i in selected
+        for duration, _, left_ms, right_ms in selected
     )
     return TickQualityReport(
         symbol=symbol,
         source=source,
         start=start,
         end=end,
-        ticks=len(rows),
+        ticks=count,
         segments=len(raw_segments),
         uncovered=tuple((from_us(left), from_us(right)) for left, right in uncovered_us),
         large_gaps=gaps,
-        repeated_timestamps=int(np.count_nonzero(deltas_ms == 0)),
-        out_of_order_timestamps=int(np.count_nonzero(deltas_ms < 0)),
+        repeated_timestamps=repeated,
+        out_of_order_timestamps=raw_disorder,
         session_schedule_name=schedule.name if schedule is not None else None,
     )
