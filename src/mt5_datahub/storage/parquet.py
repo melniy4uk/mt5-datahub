@@ -169,6 +169,10 @@ class ParquetCache:
                     (path,source,symbol,kind,timeframe,start_us,end_us)
                     VALUES (?,?,?,?,?,?,?)""",
                     (relative, source, symbol, kind, timeframe, start, end))
+            logger.debug(
+                "cache_saved source=%s symbol=%s kind=%s rows=%d start_us=%d end_us=%d",
+                source, symbol, kind, len(selected), start, end,
+            )
         except Exception as exc:
             temporary.unlink(missing_ok=True)
             # Do not remove destination: transaction outcome might be uncertain.

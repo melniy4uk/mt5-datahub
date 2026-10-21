@@ -9,6 +9,7 @@ from typing import Self
 
 from numpy import ndarray
 
+from mt5_datahub.exceptions import MT5HistoryLimitError
 from mt5_datahub.providers.mt5 import MT5Provider
 from mt5_datahub.storage.parquet import ParquetCache
 from mt5_datahub.timeframes import VALID, closed_only, current_bar_open_us
@@ -181,8 +182,7 @@ class MarketData:
 
         The iterator is lazy and does not assemble the full result in memory.
         Downloaded data remains cached if iteration stops or fails.
-        Batches follow Parquet segment order, which might not be globally
-        sorted when cached segments overlap.
+        Parquet reads merge overlapping segments into chronological batches.
         """
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -253,10 +253,10 @@ class MarketData:
             return
         gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
         if gaps:
-            logger.info("Cache miss for %s %s (%d intervals)", kind, symbol, len(gaps))
+            logger.info("cache_miss source=%s symbol=%s kind=%s gaps=%d", self.source, symbol, kind, len(gaps))
             self.connect()
         else:
-            logger.debug("Cache hit for %s %s", kind, symbol)
+            logger.debug("cache_hit source=%s symbol=%s kind=%s", self.source, symbol, kind)
         for left, right in gaps:
             cursor = left
             window = self._chunk[kind]
@@ -278,14 +278,26 @@ class MarketData:
                             len(rows),
                         )
                 else:
-                    rows = self._provider.get_candles(
-                        symbol, timeframe, from_us(cursor), from_us(stop)
-                    )
+                    try:
+                        rows = self._provider.get_candles(
+                            symbol, timeframe, from_us(cursor), from_us(stop)
+                        )
+                    except MT5HistoryLimitError:
+                        # A capped reply is NOT authoritative coverage. Split
+                        # before writing anything to the interval index.
+                        if stop - cursor <= 1_000_000:
+                            raise
+                        window = max(1_000_000, (stop - cursor) // 2)
+                        logger.warning(
+                            "candle_window_split symbol=%s timeframe=%d window_us=%d",
+                            symbol, timeframe, window,
+                        )
+                        continue
                     rows = closed_only(rows, timeframe, to_us(datetime.now(UTC)))
                 if len(rows):
                     self.cache.save(self.source, symbol, kind, timeframe, rows, cursor, stop)
                 else:
-                    logger.debug("No %s for %s in [%s, %s)", kind, symbol, cursor, stop)
+                    logger.debug("cache_empty_response source=%s symbol=%s kind=%s start_us=%d end_us=%d", self.source, symbol, kind, cursor, stop)
                 cursor = stop
 
     def _get(

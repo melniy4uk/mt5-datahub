@@ -8,7 +8,7 @@ import MetaTrader5 as mt5
 from numpy import ndarray
 
 from mt5_datahub.arrays import select_range
-from mt5_datahub.exceptions import MT5ConnectionError, MT5RequestError
+from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, MT5RequestError
 from mt5_datahub.timeframes import VALID
 from mt5_datahub.timeutils import to_us, validate_range
 
@@ -98,13 +98,12 @@ class MT5Provider:
                     terminal = mt5.terminal_info()
                     maxbars = getattr(terminal, "maxbars", None)
                     if isinstance(maxbars, int) and maxbars > 0 and len(result) >= maxbars:
-                        logger.warning(
-                            "MT5 candle response for %s reached Max. bars in chart=%d; "
-                            "earlier requested history may be truncated",
-                            symbol, maxbars,
+                        raise MT5HistoryLimitError(
+                            f"MT5 candle history for {symbol!r} reached "
+                            f"Max. bars in chart={maxbars}; reduce request interval"
                         )
                 logger.info(
-                    "MT5 %s %s: %d rows in %.3fs", kind, symbol,
+                    "mt5_request kind=%s symbol=%s rows=%d elapsed_s=%.3f", kind, symbol,
                     len(filtered), perf_counter() - started,
                 )
                 return filtered
@@ -112,7 +111,7 @@ class MT5Provider:
             # Only retry when the terminal actually lost its connection.
             terminal = mt5.terminal_info()
             if attempt == 0 and (terminal is None or not terminal.connected):
-                logger.warning("MT5 %s request interrupted; retrying once", kind)
+                logger.warning("mt5_retry kind=%s symbol=%s attempt=%d", kind, symbol, attempt + 1)
                 continue
             code, message = mt5.last_error()
             raise MT5RequestError(
