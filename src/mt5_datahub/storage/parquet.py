@@ -156,6 +156,99 @@ class ParquetCache:
             # Do not remove destination: transaction outcome might be uncertain.
             raise StorageError(f"Cannot save Parquet chunk {relative}: {exc}") from exc
 
+    def replace(
+        self, source: str, symbol: str, kind: str, timeframe: int,
+        rows: ndarray, start: int, end: int, *,
+        confirm: bool = False, allow_changes: bool = False,
+    ) -> int:
+        """Atomically replace complete overlapping segments after validation.
+
+        Physical old Parquet files are retained for recovery. By default, all
+        existing rows (including multiplicities) must occur in the replacement:
+        a shorter or truncated MT5 response cannot silently erase good history.
+        Changes to historical rows require an explicit allow_changes opt-in.
+        """
+        if not confirm:
+            raise StorageError("Explicit confirm=True required to replace cached history")
+        if start >= end:
+            raise ValueError("Invalid interval")
+        segments = self._segments_for(source, symbol, kind, timeframe, start, end)
+        if any(left < start or right > end for _, left, right in segments):
+            raise StorageError("Replacement must cover every affected segment in full")
+        expected = TICK_DTYPE if kind == "ticks" else CANDLE_DTYPE
+        if rows.dtype != expected:
+            raise StorageError("Replacement array must have the canonical MT5 dtype")
+        selected = combine([select_range(rows, kind, start, end)], kind)
+        if not len(selected):
+            raise StorageError("Refusing to replace history with an empty MT5 response")
+
+        if segments and not allow_changes:
+            previous = self.read(source, symbol, kind, timeframe, start, end)
+            if len(selected) < len(previous):
+                raise StorageError("Fresh history contains fewer rows than existing cache")
+            old_unique, old_counts = np.unique(previous, return_counts=True)
+            new_unique, new_counts = np.unique(selected, return_counts=True)
+            for value, occurrences in zip(old_unique, old_counts):
+                index = int(np.searchsorted(new_unique, value))
+                if (index >= len(new_unique) or new_unique[index] != value
+                        or new_counts[index] < occurrences):
+                    raise StorageError(
+                        "Historical rows changed/disappeared; allow_changes=True "
+                        "required after inspecting the broker's correction"
+                    )
+
+        filename = "segments/" + uuid4().hex + ".parquet"
+        destination = self.directory / filename
+        temporary = destination.with_suffix(".tmp")
+        try:
+            pq.write_table(
+                pa.table({name: pa.array(selected[name]) for name in expected.names or ()}),
+                temporary, compression="zstd",
+            )
+            os.replace(temporary, destination)
+            with self._db() as db:
+                for path, _, _ in segments:
+                    deleted = db.execute(
+                        """DELETE FROM segments WHERE path=? AND source=? AND symbol=?
+                           AND kind=? AND timeframe=?""",
+                        (path, source, symbol, kind, timeframe),
+                    ).rowcount
+                    if deleted != 1:
+                        raise StorageError("Index changed during replacement")
+                db.execute(
+                    """INSERT INTO segments
+                       (path,source,symbol,kind,timeframe,start_us,end_us)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (filename, source, symbol, kind, timeframe, start, end),
+                )
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            raise StorageError(f"Cannot replace Parquet history: {exc}") from exc
+        logger.info("Replaced %d segments for %s %s", len(segments), kind, symbol)
+        return len(segments)
+
+    def orphan_files(self) -> tuple[Path, ...]:
+        """List unindexed Parquet data files without deleting anything.
+
+        Only call with exclusive writer access: concurrent staging files are
+        not yet indexed and must not be mistaken for abandoned files.
+        """
+        with self._db() as db:
+            live = {row[0] for row in db.execute("SELECT path FROM segments")}
+        return tuple(sorted(
+            path for path in self._chunks.glob("*.parquet")
+            if path.relative_to(self.directory).as_posix() not in live
+        ))
+
+    def prune_orphans(self, *, confirm: bool = False) -> int:
+        """Explicit, irreversible cleanup; never automatic."""
+        orphans = self.orphan_files()
+        if orphans and not confirm:
+            raise StorageError("Pass confirm=True after backing up orphan Parquet files")
+        for path in orphans:
+            path.unlink()
+        return len(orphans)
+
     @staticmethod
     def _array(table: pa.Table | pa.RecordBatch) -> ndarray:
         fields = {

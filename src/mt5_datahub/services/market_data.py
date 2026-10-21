@@ -86,6 +86,82 @@ class MarketData:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         return self._get(symbol, "candles", timeframe, start, end)
 
+    def refresh_ticks(
+        self, symbol: str, start: datetime, end: datetime, *,
+        confirm: bool = False, allow_changes: bool = False,
+        max_rows: int = 2_000_000,
+    ) -> ndarray:
+        """Recheck history against MT5 before atomically replacing its cache."""
+        return self._refresh(
+            symbol, "ticks", 0, start, end,
+            confirm=confirm, allow_changes=allow_changes, max_rows=max_rows,
+        )
+
+    def refresh_candles(
+        self, symbol: str, timeframe: int, start: datetime, end: datetime, *,
+        confirm: bool = False, allow_changes: bool = False,
+        max_rows: int = 2_000_000,
+    ) -> ndarray:
+        if timeframe not in VALID:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+        return self._refresh(
+            symbol, "candles", timeframe, start, end,
+            confirm=confirm, allow_changes=allow_changes, max_rows=max_rows,
+        )
+
+    def _refresh(
+        self, symbol: str, kind: str, timeframe: int,
+        start: datetime, end: datetime, *,
+        confirm: bool, allow_changes: bool, max_rows: int,
+    ) -> ndarray:
+        from mt5_datahub.arrays import combine, empty
+        from mt5_datahub.exceptions import StorageError
+
+        if not confirm:
+            raise StorageError("refresh requires confirm=True")
+        if max_rows < 1:
+            raise ValueError("max_rows must be positive")
+        first, last = self._prepare_range(
+            symbol, start, end, kind=kind, timeframe=timeframe,
+        )
+        if first >= last:
+            return empty(kind)
+        # Index rows are indivisible: expand to include the entire stored
+        # segment before replacing, otherwise data outside the selected
+        # interval would disappear from the index.
+        affected = self.cache._segments_for(
+            self.source, symbol, kind, timeframe, first, last,
+        )
+        if affected:
+            first = min(first, *(left for _, left, _ in affected))
+            last = max(last, *(right for _, _, right in affected))
+        self.connect()
+        parts: list[ndarray] = []
+        count = 0
+        cursor = first
+        while cursor < last:
+            stop = min(cursor + self._chunk[kind], last)
+            if kind == "ticks":
+                rows = self._provider.get_ticks(symbol, from_us(cursor), from_us(stop))
+            else:
+                rows = self._provider.get_candles(
+                    symbol, timeframe, from_us(cursor), from_us(stop),
+                )
+                rows = closed_only(rows, timeframe, to_us(datetime.now(UTC)))
+            count += len(rows)
+            if count > max_rows:
+                raise StorageError("Refresh exceeds max_rows; select a shorter interval")
+            parts.append(rows)
+            cursor = stop
+        merged = combine(parts, kind)
+        # Replacement is a single transaction; old index/files remain intact
+        # if validation or the MT5 download fails.
+        self.cache.replace(
+            self.source, symbol, kind, timeframe, merged, first, last,
+            confirm=True, allow_changes=allow_changes,
+        )
+        return self.cache.read(self.source, symbol, kind, timeframe, first, last)
+
     def iter_ticks(
         self,
         symbol: str,
