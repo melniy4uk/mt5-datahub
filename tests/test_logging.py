@@ -1,12 +1,15 @@
 """Offline regression checks for operational logging without account secrets."""
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
 from mt5_datahub import MarketData
 from mt5_datahub.arrays import TICK_DTYPE
+from mt5_datahub.exceptions import StorageError
+from mt5_datahub.storage.parquet import ParquetCache
 
 
 class StubProvider:
@@ -38,6 +41,21 @@ class LogTests(unittest.TestCase):
             self.assertIn("cache_saved source=test-broker", events)
             self.assertIn("cache_hit source=test-broker", events)
             self.assertEqual(provider.calls, 1)
+
+    def test_storage_error_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ParquetCache(directory)
+            rows = np.zeros(1, dtype=TICK_DTYPE)
+            rows["time_msc"] = 1000
+            with patch(
+                "mt5_datahub.storage.parquet.pq.write_table",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertLogs("mt5_datahub.storage.parquet", level="ERROR") as logs:
+                    with self.assertRaises(StorageError):
+                        cache.save("broker", "x", "ticks", 0, rows, 1_000_000, 2_000_000)
+            self.assertIn("cache_save_failed", logs.output[0])
+            self.assertIn("error_type=OSError", logs.output[0])
 
 
 if __name__ == "__main__":
