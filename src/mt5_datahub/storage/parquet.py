@@ -5,6 +5,7 @@ broker's historical feed was independently verified as complete.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -19,6 +20,8 @@ from numpy import ndarray
 
 from mt5_datahub.arrays import combine, empty, select_range, timestamps_us, TICK_DTYPE, CANDLE_DTYPE
 from mt5_datahub.exceptions import StorageError
+
+logger = logging.getLogger(__name__)
 
 
 class ParquetCache:
@@ -42,6 +45,10 @@ class ParquetCache:
             )""")
             db.execute("""CREATE INDEX IF NOT EXISTS segments_query
                 ON segments(source,symbol,kind,timeframe,start_us,end_us)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS source_bindings (
+                source TEXT PRIMARY KEY,
+                identity TEXT NOT NULL
+            )""")
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -56,6 +63,41 @@ class ParquetCache:
                 yield db
         finally:
             db.close()
+
+    def bind_source(self, source: str, identity: str) -> bool:
+        """Pin a NEW cache source to the actual broker account/server.
+
+        Existing unbound legacy sources remain readable but cannot be safely
+        attributed retroactively; they are warned about and not auto-bound.
+        Returns whether this source is bound to the supplied identity.
+        """
+        if not source.strip() or not identity.strip():
+            raise ValueError("source and identity must not be empty")
+        with self._db() as db:
+            row = db.execute(
+                "SELECT identity FROM source_bindings WHERE source=?", (source,)
+            ).fetchone()
+            if row is not None:
+                if row[0] != identity:
+                    raise StorageError(
+                        f"Cache source {source!r} is bound to a different MT5 account/server"
+                    )
+                return True
+            legacy = db.execute(
+                "SELECT 1 FROM segments WHERE source=? LIMIT 1", (source,)
+            ).fetchone()
+            if legacy:
+                logger.warning(
+                    "Legacy cache source %r has no verified account/server identity; "
+                    "use a new source identifier to prevent mixing historical feeds",
+                    source,
+                )
+                return False
+            db.execute(
+                "INSERT INTO source_bindings (source,identity) VALUES (?,?)",
+                (source, identity),
+            )
+            return True
 
     def _segments_for(self, source: str, symbol: str, kind: str, timeframe: int,
                       start: int, end: int) -> list[tuple[str, int, int]]:

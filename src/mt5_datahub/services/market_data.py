@@ -47,9 +47,20 @@ class MarketData:
         }
 
     def connect(self) -> None:
-        if not self._connected:
-            self._provider.connect()
-            self._connected = True
+        if self._connected:
+            return
+        self._provider.connect()
+        try:
+            identity_fn = getattr(self._provider, "source_identity", None)
+            if callable(identity_fn):
+                identity = identity_fn()
+                if identity is not None:
+                    self.cache.bind_source(self.source, identity)
+        except Exception:
+            if self._owns_provider:
+                self._provider.disconnect()
+            raise
+        self._connected = True
 
     def disconnect(self) -> None:
         if self._connected and self._owns_provider:
@@ -160,7 +171,10 @@ class MarketData:
             return
         gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
         if gaps:
+            logger.info("Cache miss for %s %s (%d intervals)", kind, symbol, len(gaps))
             self.connect()
+        else:
+            logger.debug("Cache hit for %s %s", kind, symbol)
         for left, right in gaps:
             cursor = left
             while cursor < right:
