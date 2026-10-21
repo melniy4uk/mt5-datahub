@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -51,6 +52,24 @@ class CacheTests(unittest.TestCase):
             result = cache.read("broker", "XAUUSD", "ticks", 0, 1_000_000, 2_000_000)
             self.assertEqual(result["bid"].tolist(), [100, 101])
 
+
+
+    def test_sqlite_connection_closed_after_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ParquetCache(directory)
+            with cache._db() as db:
+                db.execute("SELECT 1")
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
+
+    def test_sqlite_connection_closed_after_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ParquetCache(directory)
+            with self.assertRaisesRegex(RuntimeError, "deliberate"):
+                with cache._db() as db:
+                    raise RuntimeError("deliberate")
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
 
 if __name__ == "__main__":
     unittest.main()

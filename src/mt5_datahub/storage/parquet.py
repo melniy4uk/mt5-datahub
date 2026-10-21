@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,8 +43,19 @@ class ParquetCache:
             db.execute("""CREATE INDEX IF NOT EXISTS segments_query
                 ON segments(source,symbol,kind,timeframe,start_us,end_us)""")
 
-    def _db(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._index, timeout=30)
+    @contextmanager
+    def _db(self) -> Iterator[sqlite3.Connection]:
+        """Commit or roll back the transaction and always close the connection.
+
+        sqlite3.Connection.__exit__ handles transactions but does NOT close
+        the database. On Windows an unclosed connection locks the index file.
+        """
+        db = sqlite3.connect(self._index, timeout=30)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _segments_for(self, source: str, symbol: str, kind: str, timeframe: int,
                       start: int, end: int) -> list[tuple[str, int, int]]:
