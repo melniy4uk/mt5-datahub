@@ -3,6 +3,8 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from mt5_datahub.arrays import TICK_DTYPE
 from mt5_datahub.quality import audit_ticks
@@ -75,6 +77,29 @@ class QualityTests(unittest.TestCase):
                     folder, "broker", "XAUUSD.s", self.start, self.end,
                     gap_threshold=timedelta(0),
                 )
+
+    def test_raw_out_of_order_is_reported_before_sorting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = ParquetCache(folder)
+            first = self._rows([3, 1, 2])
+            # Deliberately inject an old unsorted file (normal save sorts).
+            cache.save("broker", "XAUUSD.s", "ticks", 0, first,
+                       to_us(self.start), to_us(self.end))
+            path = cache.directory / cache._segments_for(
+                "broker", "XAUUSD.s", "ticks", 0,
+                to_us(self.start), to_us(self.end),
+            )[0][0]
+            original = pq.read_table(path)
+            # Stored order becomes 3s, 1s, 2s.
+            stamp = original["time_msc"].to_pylist()
+            changed = original.set_column(
+                original.schema.get_field_index("time_msc"),
+                "time_msc", pa.array([stamp[2], stamp[0], stamp[1]]),
+            )
+            pq.write_table(changed, path)
+            report = audit_ticks(folder, "broker", "XAUUSD.s", self.start, self.end)
+            self.assertEqual(report.out_of_order_timestamps, 1)
+            self.assertEqual(report.ticks, 3)
 
 
 if __name__ == "__main__":
