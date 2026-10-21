@@ -5,7 +5,7 @@ from typing import Self
 import MetaTrader5 as mt5
 from numpy import ndarray
 
-from mt5_datahub.exceptions import MT5ConnectionError
+from mt5_datahub.exceptions import MT5ConnectionError, MT5RequestError
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class MT5Provider:
         if not info.visible:
             if not mt5.symbol_select(symbol, True):
                 code, message = mt5.last_error()
-                raise RuntimeError(
+                raise MT5RequestError(
                     f"MT5: не удалось активировать '{symbol}' [{code}]: {message}"
                 )
 
@@ -151,7 +151,7 @@ class MT5Provider:
                 code,
                 message,
             )
-            raise RuntimeError(
+            raise MT5RequestError(
                 f"MT5: ошибка получения {kind} {symbol} [{code}]: {message}"
             )
 

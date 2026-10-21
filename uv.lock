@@ -20,10 +20,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "metatrader5" },
+    { name = "numpy" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "metatrader5", specifier = ">=5.0.6231" }]
+requires-dist = [
+    { name = "metatrader5", specifier = ">=5.0.6231" },
+    { name = "numpy", specifier = ">=2.5.4" },
+]
 
 [[package]]
 name = "numpy"

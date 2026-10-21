@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "metatrader5>=5.0.6231",
+    "numpy>=2.5.4",
 ]
 
 [project.scripts]
