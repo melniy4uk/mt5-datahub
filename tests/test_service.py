@@ -84,6 +84,57 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(len(one.requests), 1)
             self.assertEqual(len(two.requests), 1)
 
+    def test_iter_ticks_matches_full_and_uses_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FakeProvider()
+            with MarketData("fake", temp, provider=fake,
+                            tick_chunk=timedelta(hours=1)) as data:
+                iterator = data.iter_ticks("XAUUSD.s", self.start, self.end,
+                                           columns=("time_msc", "bid"), batch_size=1)
+                self.assertEqual(len(fake.requests), 0)  # truly lazy
+                batches = list(iterator)
+                self.assertEqual(len(fake.requests), 3)
+                self.assertEqual(sum(map(len, batches)), 6)
+                self.assertTrue(all(len(batch) <= 1 for batch in batches))
+                self.assertTrue(all(batch.dtype.names == ("time_msc", "bid")
+                                    for batch in batches))
+                expected = data.get_ticks("XAUUSD.s", self.start, self.end)
+                np.testing.assert_array_equal(
+                    np.concatenate(batches)["time_msc"], expected["time_msc"]
+                )
+                self.assertEqual(len(fake.requests), 3)  # no network on cache hit
+
+    def test_iter_ticks_resume_and_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            failing = FakeProvider(fail_at=2)
+            with MarketData("fake", temp, provider=failing,
+                            tick_chunk=timedelta(hours=1)) as data:
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    list(data.iter_ticks("XAUUSD.s", self.start, self.end))
+            recovered = FakeProvider()
+            with MarketData("fake", temp, provider=recovered,
+                            tick_chunk=timedelta(hours=1)) as data:
+                result = list(data.iter_ticks("XAUUSD.s", self.start, self.end,
+                                              batch_size=2))
+                self.assertEqual(sum(len(part) for part in result), 6)
+                self.assertEqual(len(recovered.requests), 2)
+                with self.assertRaises(ValueError):
+                    list(data.iter_ticks("XAUUSD.s", self.start, self.end,
+                                         batch_size=0))
+                with self.assertRaises(ValueError):
+                    list(data.iter_ticks("XAUUSD.s", self.start, self.end,
+                                         columns=("nonexistent",)))
+                self.assertEqual(len(recovered.requests), 2)
+
+    def test_iter_ticks_empty_future_range(self):
+        future = datetime.now(UTC) + timedelta(days=1)
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FakeProvider()
+            data = MarketData("fake", temp, provider=fake)
+            self.assertEqual(list(data.iter_ticks("XAUUSD.s", future,
+                                                   future + timedelta(hours=1))), [])
+            self.assertEqual(len(fake.requests), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

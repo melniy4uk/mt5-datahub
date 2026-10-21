@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Self
@@ -74,20 +75,46 @@ class MarketData:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         return self._get(symbol, "candles", timeframe, start, end)
 
-    def _get(
-        self, symbol: str, kind: str, timeframe: int,
-        start: datetime, end: datetime,
-    ) -> ndarray:
+    def iter_ticks(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        columns: tuple[str, ...] | None = None,
+        batch_size: int = 65_536,
+    ) -> Iterator[ndarray]:
+        """Download uncached ranges, then yield bounded NumPy tick batches.
+
+        The iterator is lazy and does not assemble the full result in memory.
+        Downloaded data remains cached if iteration stops or fails.
+        Batches follow Parquet segment order, which might not be globally
+        sorted when cached segments overlap.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        first, last = self._prepare_range(symbol, start, end)
+        if first >= last:
+            return
+        self._fill_cache(symbol, "ticks", 0, first, last)
+        yield from self.cache.iter_batches(
+            self.source, symbol, "ticks", 0, first, last,
+            columns=columns, batch_size=batch_size,
+        )
+
+    def _prepare_range(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> tuple[int, int]:
         start, end = validate_range(start, end)
         if not symbol.strip():
             raise ValueError("symbol cannot be empty")
-        first, last = to_us(start), to_us(end)
-        # Do not query a future period. The cache may contain old closed bars,
-        # but current unfinished bars must never be stored.
-        last = min(last, to_us(datetime.now(UTC)))
+        return to_us(start), min(to_us(end), to_us(datetime.now(UTC)))
+
+    def _fill_cache(
+        self, symbol: str, kind: str, timeframe: int, first: int, last: int
+    ) -> None:
         if first >= last:
-            from mt5_datahub.arrays import empty
-            return empty(kind)
+            return
         gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
         if gaps:
             self.connect()
@@ -107,4 +134,14 @@ class MarketData:
                 else:
                     logger.debug("No %s for %s in [%s, %s)", kind, symbol, cursor, stop)
                 cursor = stop
+
+    def _get(
+        self, symbol: str, kind: str, timeframe: int,
+        start: datetime, end: datetime,
+    ) -> ndarray:
+        first, last = self._prepare_range(symbol, start, end)
+        if first >= last:
+            from mt5_datahub.arrays import empty
+            return empty(kind)
+        self._fill_cache(symbol, kind, timeframe, first, last)
         return self.cache.read(self.source, symbol, kind, timeframe, first, last)
