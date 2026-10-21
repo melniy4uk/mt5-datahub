@@ -44,7 +44,7 @@ class CandleCoverageTests(unittest.TestCase):
     def check_rollover(self, timeframe, earlier, current, after):
         with tempfile.TemporaryDirectory() as tmp:
             provider = CandleProvider((earlier, current))
-            data = MarketData("mock", tmp, provider=provider)
+            data = MarketData("mock", tmp, provider=provider, candle_chunk=timedelta(days=62))
             with frozen_clock(current + timedelta(seconds=30)):
                 first = data.get_candles("XAUUSD.s", timeframe, earlier, after)
                 self.assertEqual(first["time"].tolist(), [int(earlier.timestamp())])
