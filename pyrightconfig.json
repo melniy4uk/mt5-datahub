@@ -1,3 +1,5 @@
 {
-  "stubPath": "typings"
+  "include": ["src", "examples"],
+  "extraPaths": ["src"],
+  "typeCheckingMode": "standard"
 }
