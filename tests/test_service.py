@@ -136,5 +136,73 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(len(fake.requests), 0)
 
 
+    def test_stream_ticks_returns_first_batch_before_next_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FakeProvider()
+            data = MarketData("fake", temp, provider=fake,
+                              tick_chunk=timedelta(hours=1))
+            iterator = data.stream_ticks(
+                "XAUUSD.s", self.start, self.end,
+                columns=("time_msc", "bid"), batch_size=1,
+            )
+            self.assertEqual(len(fake.requests), 0)
+            first = next(iterator)
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first.dtype.names, ("time_msc", "bid"))
+            self.assertEqual(len(fake.requests), 1)
+            iterator.close()
+            self.assertEqual(len(fake.requests), 1)
+
+            # The first chunk was saved before the iterator stopped.
+            resumed = list(data.stream_ticks(
+                "XAUUSD.s", self.start, self.end,
+                columns=("time_msc", "bid"), batch_size=1,
+            ))
+            self.assertEqual(len(fake.requests), 3)
+            self.assertEqual(sum(len(batch) for batch in resumed), 6)
+            expected = data.get_ticks("XAUUSD.s", self.start, self.end)
+            np.testing.assert_array_equal(
+                np.concatenate(resumed)["time_msc"], expected["time_msc"],
+            )
+
+    def test_stream_ticks_failure_preserves_previous_chunk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            failing = FakeProvider(fail_at=2)
+            data = MarketData("fake", temp, provider=failing,
+                              tick_chunk=timedelta(hours=1))
+            iterator = data.stream_ticks("XAUUSD.s", self.start, self.end)
+            self.assertEqual(len(next(iterator)), 2)
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                list(iterator)
+            self.assertEqual(len(failing.requests), 2)
+
+            recovered = FakeProvider()
+            data = MarketData("fake", temp, provider=recovered,
+                              tick_chunk=timedelta(hours=1))
+            parts = list(data.stream_ticks("XAUUSD.s", self.start, self.end))
+            self.assertEqual(len(recovered.requests), 2)
+            self.assertEqual(sum(len(part) for part in parts), 6)
+            self.assertEqual(len(list(data.stream_ticks(
+                "XAUUSD.s", self.start, self.end,
+            ))), 3)
+            self.assertEqual(len(recovered.requests), 2)
+
+    def test_stream_ticks_validation_and_future(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FakeProvider()
+            data = MarketData("fake", temp, provider=fake)
+            with self.assertRaises(ValueError):
+                list(data.stream_ticks("XAUUSD.s", self.start, self.end,
+                                       batch_size=0))
+            with self.assertRaises(ValueError):
+                list(data.stream_ticks("XAUUSD.s", self.start, self.end,
+                                       columns=("unknown",)))
+            future = datetime.now(UTC) + timedelta(days=1)
+            self.assertEqual(list(data.stream_ticks(
+                "XAUUSD.s", future, future + timedelta(hours=1)
+            )), [])
+            self.assertEqual(len(fake.requests), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

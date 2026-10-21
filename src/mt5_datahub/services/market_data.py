@@ -102,6 +102,41 @@ class MarketData:
             columns=columns, batch_size=batch_size,
         )
 
+    def stream_ticks(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        columns: tuple[str, ...] | None = None,
+        batch_size: int = 65_536,
+    ) -> Iterator[ndarray]:
+        """Fetch, persist and yield one bounded time interval at a time.
+
+        Stops downloading when the caller stops consuming. Cached intervals
+        survive interruption. A single MT5 request can still be large.
+        """
+        from mt5_datahub.arrays import TICK_DTYPE
+
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        names = tuple(TICK_DTYPE.names or ())
+        if columns is not None and (
+            not columns or len(set(columns)) != len(columns)
+            or any(name not in names for name in columns)
+        ):
+            raise ValueError("Unknown or duplicated requested column")
+        first, last = self._prepare_range(symbol, start, end)
+        cursor = first
+        while cursor < last:
+            stop = min(cursor + self._chunk["ticks"], last)
+            self._fill_cache(symbol, "ticks", 0, cursor, stop)
+            yield from self.cache.iter_batches(
+                self.source, symbol, "ticks", 0, cursor, stop,
+                columns=columns, batch_size=batch_size,
+            )
+            cursor = stop
+
     def _prepare_range(
         self, symbol: str, start: datetime, end: datetime
     ) -> tuple[int, int]:
