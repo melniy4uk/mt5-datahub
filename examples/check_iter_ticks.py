@@ -26,30 +26,30 @@ def main():
     cache_dir = Path(".mt5-datahub/audit")
     start = datetime(2026, 10, 19, tzinfo=UTC)
     end = datetime(2026, 10, 21, tzinfo=UTC)
-    with MarketData(source=source, cache_dir=cache_dir, provider=NoDownload()) as data:
-        missing = data.cache.missing(source, symbol, "ticks", 0, to_us(start), to_us(end))
-        if missing:
-            raise SystemExit(f"Cache is incomplete ({len(missing)} intervals); run audit first")
-        before = perf_counter()
-        expected = data.get_ticks(symbol, start, end)
-        full_sec = perf_counter() - before
-        before = perf_counter()
-        chunks = []
-        rows = 0
-        for batch in data.iter_ticks(symbol, start, end, batch_size=65_536):
-            if len(batch) > 65_536:
-                raise AssertionError("Batch size exceeded")
-            chunks.append(batch)
-            rows += len(batch)
-        streamed_sec = perf_counter() - before
-        actual = np.concatenate(chunks) if chunks else expected[:0]
-        np.testing.assert_array_equal(expected, actual)
-        print(f"Verified ticks: {rows:,}")
-        print(f"Full read: {full_sec:.3f}s")
-        print(f"Public iterator: {streamed_sec:.3f}s")
-        print(f"Batches: {len(chunks)}")
-        print("PASS: Public API preserves every tick and uses cached data only")
+    data = MarketData(source=source, cache_dir=cache_dir, provider=NoDownload())
+    missing = data.cache.missing(source, symbol, "ticks", 0, to_us(start), to_us(end))
+    if missing:
+        raise SystemExit(f"Cache is incomplete ({len(missing)} intervals); run audit first")
+    before = perf_counter()
+    expected = data.get_ticks(symbol, start, end)
+    full_sec = perf_counter() - before
+    before = perf_counter()
+    chunks = []
+    rows = 0
+    for batch in data.iter_ticks(symbol, start, end, batch_size=65_536):
+        if len(batch) > 65_536:
+            raise AssertionError("Batch size exceeded")
+        chunks.append(batch)
+        rows += len(batch)
+    streamed_sec = perf_counter() - before
+    actual = np.concatenate(chunks) if chunks else expected[:0]
+    np.testing.assert_array_equal(expected, actual)
+    print(f"Verified ticks: {rows:,}")
+    print(f"Full read: {full_sec:.3f}s")
+    print(f"Public iterator: {streamed_sec:.3f}s")
+    print(f"Batches: {len(chunks)}")
+    print("PASS: Public API preserves every tick and uses cached data only")
 
 
 if __name__ == "__main__":
-    main()
+main()
