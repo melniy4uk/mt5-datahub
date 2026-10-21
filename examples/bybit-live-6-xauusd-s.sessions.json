@@ -1,0 +1,10 @@
+{
+  "name": "Bybit-Live-6 XAUUSD.s quoting schedule (verify broker clock is UTC)",
+  "sessions": [
+    {"weekday": 0, "opens": "01:00", "closes": "23:58"},
+    {"weekday": 1, "opens": "01:00", "closes": "23:58"},
+    {"weekday": 2, "opens": "01:00", "closes": "23:58"},
+    {"weekday": 3, "opens": "01:00", "closes": "23:58"},
+    {"weekday": 4, "opens": "01:00", "closes": "23:57"}
+  ]
+}
