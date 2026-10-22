@@ -14,7 +14,6 @@ import MetaTrader5 as mt5
 import numpy as np
 from numpy import ndarray
 
-from mt5_datahub.arrays import CANDLE_DTYPE
 from mt5_datahub.exceptions import MT5RequestError, StorageError
 from mt5_datahub.storage.parquet import ParquetCache
 from mt5_datahub.timeutils import from_us, to_us, validate_range
@@ -175,8 +174,23 @@ def compare_tick_ohlc_to_m1(
         candles = provider.get_candles(
             symbol, mt5.TIMEFRAME_M1, from_us(cursor), from_us(right),
         )
-        if candles.dtype != CANDLE_DTYPE:
-            raise MT5RequestError("MT5 M1 candles have an unexpected dtype")
+        # MT5 often returns unsigned tick_volume/real_volume. Those fields
+        # are irrelevant to an OHLC comparison, so validating the *entire*
+        # structured dtype incorrectly rejects otherwise valid live bars.
+        required = ("time", "open", "high", "low", "close")
+        names = candles.dtype.names or ()
+        if any(name not in names for name in required):
+            raise MT5RequestError(
+                "MT5 M1 candles are missing required time/OHLC columns"
+            )
+        for name in required:
+            kind = candles[name].dtype.kind
+            valid = kind in "iu" if name == "time" else kind == "f"
+            if not valid:
+                raise MT5RequestError(
+                    f"MT5 M1 candle field {name!r} has invalid type "
+                    f"{candles[name].dtype}"
+                )
         candle_map: dict[int, tuple[float, float, float, float]] = {}
         for bar in candles:
             stamp = int(bar["time"]) * 1_000_000
