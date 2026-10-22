@@ -28,6 +28,8 @@ class PublicContractTests(unittest.TestCase):
             self.assertTrue(callable(getattr(MarketData, name)))
         self.assertTrue(callable(MT5Provider.get_ticks))
         self.assertTrue(callable(MT5Provider.get_candles))
+        self.assertIsNone(params["source"].default)  # Account auto-detection is default.
+
 
     def test_offline_inspection_from_package_root(self):
         start = datetime(2026, 10, 20, 10, tzinfo=UTC)

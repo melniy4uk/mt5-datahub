@@ -9,7 +9,7 @@ from typing import Self, cast
 
 from numpy import ndarray
 
-from mt5_datahub.exceptions import MT5HistoryLimitError
+from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, StorageError
 from mt5_datahub.providers.mt5 import MT5Provider
 from mt5_datahub.storage.parquet import ParquetCache
 from mt5_datahub.timeframes import VALID, closed_only, current_bar_open_us
@@ -22,25 +22,26 @@ class MarketData:
     """Historical MT5 arrays with best-effort request caching.
 
     The cache does not certify historical completeness. One process must own
-    the cache writer. A source string identifies the broker/account dataset.
+    the cache writer. Without a source, the MT5 server/account selects the dataset.
     """
 
     def __init__(
         self,
-        source: str,
+        source: str | None = None,
         cache_dir: str | Path = ".mt5-datahub",
         provider: MT5Provider | None = None,
         tick_chunk: timedelta = timedelta(hours=2),
         candle_chunk: timedelta = timedelta(days=7),
         max_tick_rows: int = 250_000,
     ) -> None:
-        if not source.strip():
-            raise ValueError("source must identify broker/server/account")
+        if source is not None and not source.strip():
+            raise ValueError("source cannot be empty")
         if tick_chunk <= timedelta(0) or candle_chunk <= timedelta(0):
             raise ValueError("Chunk durations must be positive")
         if max_tick_rows < 2:
             raise ValueError("max_tick_rows must be at least 2")
-        self.source = source
+        self._source = source
+        self._auto_source = source is None
         self.cache = ParquetCache(cache_dir)
         self._provider = provider if provider is not None else MT5Provider()
         self._owns_provider = provider is None
@@ -51,23 +52,59 @@ class MarketData:
             "candles": int(candle_chunk / timedelta(microseconds=1)),
         }
 
+    @property
+    def source(self) -> str:
+        """Resolved cache namespace; available immediately for explicit sources.
+
+        An automatic source becomes available after connect() or the first
+        data request. It cannot be computed without the MT5 account identity.
+        """
+        if self._source is None:
+            raise MT5ConnectionError(
+                "Automatic source is not resolved; call connect() first"
+            )
+        return self._source
+
     def connect(self) -> None:
-        if self._connected:
+        # In automatic mode, even cache hits must verify the active MT5
+        # account. Explicit names retain the historical lazy-cache behavior.
+        if self._connected and not self._auto_source:
             return
         self._provider.connect()
         try:
             identity_fn = getattr(self._provider, "source_identity", None)
-            if callable(identity_fn):
-                identity = identity_fn()
-                if isinstance(identity, str):
-                    self.cache.bind_source(self.source, identity)
-                elif identity is not None:
-                    raise TypeError("source_identity() must return str or None")
+            identity = identity_fn() if callable(identity_fn) else None
+            if identity is not None and not isinstance(identity, str):
+                raise TypeError("source_identity() must return str or None")
+            if self._auto_source:
+                if not identity or not identity.strip():
+                    raise MT5ConnectionError(
+                        "Cannot determine MT5 server/account for automatic source; "
+                        "connect a broker account or pass source explicitly"
+                    )
+                resolved = f"mt5:{identity}"
+                if self._source is not None and resolved != self._source:
+                    raise StorageError(
+                        "MT5 account/server changed while using an automatic source; "
+                        "create a new MarketData instance for the other account"
+                    )
+            else:
+                resolved = self.source
+            if identity and identity.strip():
+                self.cache.bind_source(resolved, identity)
+            self._source = resolved
         except Exception:
             if self._owns_provider:
                 self._provider.disconnect()
+            self._connected = False
             raise
         self._connected = True
+
+    def _cache_source(self) -> str:
+        """Resolve and validate the source before any cache access."""
+        if self._auto_source:
+            self.connect()
+        return self.source
 
     def disconnect(self) -> None:
         if self._connected and self._owns_provider:
@@ -136,8 +173,9 @@ class MarketData:
         # Index rows are indivisible: expand to include the entire stored
         # segment before replacing, otherwise data outside the selected
         # interval would disappear from the index.
+        source = self._cache_source()
         affected = self.cache._segments_for(
-            self.source, symbol, kind, timeframe, first, last,
+            source, symbol, kind, timeframe, first, last,
         )
         if affected:
             first = min(first, *(left for _, left, _ in affected))
@@ -163,11 +201,12 @@ class MarketData:
         merged = combine(parts, kind)
         # Replacement is a single transaction; old index/files remain intact
         # if validation or the MT5 download fails.
+        self._cache_source()  # Catch account switches during the download.
         self.cache.replace(
-            self.source, symbol, kind, timeframe, merged, first, last,
+            source, symbol, kind, timeframe, merged, first, last,
             confirm=True, allow_changes=allow_changes,
         )
-        return self.cache.read(self.source, symbol, kind, timeframe, first, last)
+        return self.cache.read(source, symbol, kind, timeframe, first, last)
 
     def iter_ticks(
         self,
@@ -251,7 +290,8 @@ class MarketData:
     ) -> None:
         if first >= last:
             return
-        gaps = self.cache.missing(self.source, symbol, kind, timeframe, first, last)
+        source = self._cache_source()
+        gaps = self.cache.missing(source, symbol, kind, timeframe, first, last)
         if gaps:
             logger.info("cache_miss source=%s symbol=%s kind=%s gaps=%d", self.source, symbol, kind, len(gaps))
             self.connect()
@@ -278,8 +318,9 @@ class MarketData:
                     )
                     for page, page_left, page_right in pages:
                         if len(page):
+                            self._cache_source()  # Verify account before persisting a page.
                             self.cache.save(
-                                self.source, symbol, kind, timeframe,
+                                source, symbol, kind, timeframe,
                                 page, page_left, page_right,
                             )
                     cursor = stop
@@ -317,7 +358,8 @@ class MarketData:
                         continue
                     rows = closed_only(rows, timeframe, to_us(datetime.now(UTC)))
                 if len(rows):
-                    self.cache.save(self.source, symbol, kind, timeframe, rows, cursor, stop)
+                    self._cache_source()  # Verify account before persisting a chunk.
+                    self.cache.save(source, symbol, kind, timeframe, rows, cursor, stop)
                 else:
                     logger.debug("cache_empty_response source=%s symbol=%s kind=%s start_us=%d end_us=%d", self.source, symbol, kind, cursor, stop)
                 cursor = stop
