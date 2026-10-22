@@ -1,15 +1,28 @@
 [project]
 name = "mt5-datahub"
-version = "0.2.0.dev0"
+version = "0.2.0"
 description = "Historical MetaTrader 5 market data with Parquet caching"
 readme = "README.md"
+keywords = ["metatrader5", "historical-data", "ticks", "candles", "parquet"]
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 authors = [{ name = "Melnik" }]
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.15"
 dependencies = [
     "metatrader5>=5.0.6231",
     "numpy>=2.5.4",
     "pyarrow>=18.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/melniy4uk/mt5-datahub"
+Repository = "https://github.com/melniy4uk/mt5-datahub"
+Issues = "https://github.com/melniy4uk/mt5-datahub/issues"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
