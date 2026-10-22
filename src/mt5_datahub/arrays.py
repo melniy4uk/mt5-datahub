@@ -32,3 +32,38 @@ def combine(chunks: list[ndarray], kind: str) -> ndarray:
         return empty(kind)
     merged = np.concatenate(chunks)
     return merged[np.argsort(timestamps_us(merged, kind), kind="stable")]
+
+
+
+def canonical_candles(rows: ndarray) -> ndarray:
+    """Normalize MetaTrader5 rates into the library's stable candle dtype.
+
+    MT5 may supply tick_volume and real_volume as unsigned int64, while
+    CANDLE_DTYPE historically stores these fields as signed int64. Validate
+    named fields before converting; reject integer overflow instead of
+    silently wrapping large unsigned values. Existing Parquet schemas stay
+    compatible.
+    """
+    names = CANDLE_DTYPE.names or ()
+    actual_names = rows.dtype.names or ()
+    if rows.ndim != 1 or any(name not in actual_names for name in names):
+        raise ValueError("MT5 candles must have the canonical named columns")
+    if rows.dtype == CANDLE_DTYPE:
+        return rows
+    result = np.empty(len(rows), dtype=CANDLE_DTYPE)
+    for name in names:
+        values = rows[name]
+        if name in ("open", "high", "low", "close"):
+            if values.dtype.kind != "f":
+                raise ValueError(f"MT5 candle {name!r} is not floating point")
+        elif values.dtype.kind not in "iu":
+            raise ValueError(f"MT5 candle {name!r} is not an integer")
+        else:
+            if name == "spread":
+                minimum, maximum = -(2**31), 2**31 - 1
+            else:
+                minimum, maximum = -(2**63), 2**63 - 1
+            if values.size and (np.any(values < minimum) or np.any(values > maximum)):
+                raise ValueError(f"MT5 candle {name!r} exceeds internal integer range")
+        result[name] = values
+    return result
