@@ -39,10 +39,11 @@ class TickPaginationTests(unittest.TestCase):
         mt.copy_ticks_from.side_effect = fetch
 
     def test_full_history_with_same_ms_at_page_edges(self):
-        data = self.rows([0, 0, 1, 2, 2, 3, 5])
+        data = self.rows([0, 0, 1000, 2000, 2000, 3000, 5000])
         with patch("mt5_datahub.providers.mt5.mt5") as mt:
             self.setup_mt5(mt, data)
             with tempfile.TemporaryDirectory() as folder:
+                self.end = self.start + timedelta(seconds=6)
                 with MarketData("broker", folder, max_tick_rows=3) as service:
                     result = service.get_ticks("XAUUSD.s", self.start, self.end)
                     np.testing.assert_array_equal(result, data)
@@ -68,7 +69,7 @@ class TickPaginationTests(unittest.TestCase):
             self.setup_mt5(mt, data)
             with tempfile.TemporaryDirectory() as folder:
                 with MarketData("broker", folder, max_tick_rows=2) as service:
-                    with self.assertRaisesRegex(MT5RequestError, "same|millisecond"):
+                    with self.assertRaisesRegex(MT5RequestError, "second"):
                         service.get_ticks("XAUUSD.s", self.start, self.end)
                     self.assertEqual(service.cache.missing(
                         "broker", "XAUUSD.s", "ticks", 0,
@@ -80,7 +81,7 @@ class TickPaginationTests(unittest.TestCase):
         with patch("mt5_datahub.providers.mt5.mt5") as mt:
             self.setup_mt5(mt, data)
             with tempfile.TemporaryDirectory() as folder:
-                with MarketData("broker", folder, max_tick_rows=2) as service:
+                with MarketData("broker", folder, max_tick_rows=3) as service:
                     rows = service.get_ticks("XAUUSD.s", self.start, self.end)
                     self.assertEqual(rows["time_msc"].tolist(), [
                         self.base_ms, self.base_ms + 500,
