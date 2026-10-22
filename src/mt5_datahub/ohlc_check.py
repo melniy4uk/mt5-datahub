@@ -157,9 +157,9 @@ def compare_tick_ohlc_to_m1(
                 np.flatnonzero(np.diff(stamps)) + 1,
                 np.array([len(batch)]),
             ))
-            for l, r in zip(boundaries[:-1], boundaries[1:]):
-                minute_us = int(stamps[l]) * _MINUTE_US
-                bids = batch["bid"][l:r]
+            for left_index, right_index in zip(boundaries[:-1], boundaries[1:]):
+                minute_us = int(stamps[left_index]) * _MINUTE_US
+                bids = batch["bid"][left_index:right_index]
                 opening, high, low, closing = (
                     float(bids[0]), float(np.max(bids)),
                     float(np.min(bids)), float(bids[-1]),
