@@ -135,33 +135,32 @@ class MT5Provider:
     ) -> Iterator[tuple[ndarray, int, int]]:
         """Fetch count-bounded tick pages as (rows, left_us, right_us).
 
-        Uses copy_ticks_from, whose *count* caps the number of records returned
-        by any single native request. When the last millisecond is cut off by
-        a full page, save only records strictly before that millisecond and
-        re-request it inclusive on the next page. We never discard different
-        ticks sharing a time_msc. If one millisecond itself exceeds page_size,
-        fail rather than silently losing ticks.
+        MetaTrader5 documents date_from as a datetime / Unix seconds; it does
+        not promise sub-second cursor precision. Therefore pagination uses
+        whole-second cursors. On a full native response, the last second is
+        deliberately NOT saved and is fetched inclusive by the next page.
+        A whole second that does not fit in one page causes an explicit error
+        instead of a silent loss or a falsely covered cache interval.
 
-        Coverage is best-effort broker-request coverage, not proof that MT5
-        retains all historic broker quotes. An empty reply yields no coverage.
+        An empty response leaves its interval uncovered. Tick counts bound
+        one native reply, NOT the final get_ticks() ndarray or process RSS.
         """
         start, end = validate_range(start, end)
         if page_size < 2:
             raise ValueError("page_size must be >= 2")
         start_us, end_us = to_us(start), to_us(end)
-        # Tick timestamps have 1 ms resolution. Round the inclusive start up:
-        # any tick before that millisecond cannot belong to [start, end).
-        cursor_us = ((start_us + 999) // 1000) * 1000
-        if cursor_us >= end_us:
-            return
+        cursor_us = start_us
         while cursor_us < end_us:
             started = perf_counter()
             result = None
+            # Always request from an exact second. Microsecond datetimes may
+            # be rounded/truncated by different MT5 terminal builds.
+            request_us = (cursor_us // 1_000_000) * 1_000_000
             for attempt in range(2):
                 self._check_connection()
                 self._ensure_symbol(symbol)
                 result = mt5.copy_ticks_from(
-                    symbol, from_us(cursor_us), page_size, mt5.COPY_TICKS_ALL,
+                    symbol, from_us(request_us), page_size, mt5.COPY_TICKS_ALL,
                 )
                 if result is not None:
                     break
@@ -187,33 +186,32 @@ class MT5Provider:
             if np.any(np.diff(times) < 0):
                 raise MT5RequestError("MT5 returned ticks out of chronological order")
             last_tick_us = int(times[-1]) * 1000
-            if last_tick_us < cursor_us:
-                raise MT5RequestError("MT5 tick pagination did not progress")
+            last_second_us = (last_tick_us // 1_000_000) * 1_000_000
 
-            if len(result) < page_size or last_tick_us >= end_us:
-                # A non-full batch cannot be truncated by the count limit.
-                # A batch reaching the request end has every preceding ms.
+            if len(result) < page_size or last_second_us >= end_us:
+                # Either the native count was not exhausted or we fetched at
+                # least one complete second beyond the requested end.
                 selected = select_range(result, "ticks", cursor_us, end_us)
                 if len(selected):
                     yield selected, cursor_us, end_us
                 return
 
-            if last_tick_us == cursor_us:
+            if last_second_us <= cursor_us:
                 raise MT5RequestError(
-                    f"More than {page_size} ticks may share millisecond "
-                    f"{cursor_us // 1000}; cannot paginate without loss. "
-                    "Use a larger page_size or another broker API."
+                    f"At least {page_size} ticks were returned within one "
+                    f"second ({request_us // 1_000_000}); MT5 cannot "
+                    "paginate this interval safely. Increase max_tick_rows."
                 )
 
-            selected = select_range(result, "ticks", cursor_us, last_tick_us)
+            selected = select_range(result, "ticks", cursor_us, last_second_us)
             if len(selected):
-                yield selected, cursor_us, last_tick_us
+                yield selected, cursor_us, last_second_us
             logger.debug(
                 "mt5_page symbol=%s rows=%d window_us=%d elapsed_s=%.3f",
-                symbol, len(selected), last_tick_us - cursor_us,
+                symbol, len(selected), last_second_us - cursor_us,
                 perf_counter() - started,
             )
-            cursor_us = last_tick_us
+            cursor_us = last_second_us
 
     def get_ticks(self, symbol: str, start: datetime, end: datetime) -> ndarray:
         return self._request(symbol, start, end, "ticks")
