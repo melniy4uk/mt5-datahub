@@ -1,7 +1,8 @@
 """MetaTrader 5 adapter. No caching or filesystem responsibilities."""
+
 import logging
-from datetime import datetime
 from collections.abc import Iterator
+from datetime import datetime
 from time import perf_counter
 from typing import Self
 
@@ -10,7 +11,11 @@ import numpy as np
 from numpy import ndarray
 
 from mt5_datahub.arrays import TICK_DTYPE, canonical_candles, select_range
-from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, MT5RequestError
+from mt5_datahub.exceptions import (
+    MT5ConnectionError,
+    MT5HistoryLimitError,
+    MT5RequestError,
+)
 from mt5_datahub.timeframes import VALID
 from mt5_datahub.timeutils import from_us, to_us, validate_range
 
@@ -60,7 +65,9 @@ class MT5Provider:
         if terminal is None or not terminal.connected:
             mt5.shutdown()
             code, message = mt5.last_error()
-            raise MT5ConnectionError(f"MT5 broker still disconnected [{code}]: {message}")
+            raise MT5ConnectionError(
+                f"MT5 broker still disconnected [{code}]: {message}"
+            )
         self._connected = True
         logger.info("MT5 connection restored")
 
@@ -84,7 +91,9 @@ class MT5Provider:
             code, message = mt5.last_error()
             raise MT5RequestError(f"Cannot select {symbol!r} [{code}]: {message}")
 
-    def _request(self, symbol: str, start: datetime, end: datetime, kind: str, timeframe: int = 0) -> ndarray:
+    def _request(
+        self, symbol: str, start: datetime, end: datetime, kind: str, timeframe: int = 0
+    ) -> ndarray:
         start, end = validate_range(start, end)
         started = perf_counter()
         for attempt in range(2):
@@ -99,7 +108,11 @@ class MT5Provider:
                 if kind == "candles":
                     terminal = mt5.terminal_info()
                     maxbars = getattr(terminal, "maxbars", None)
-                    if isinstance(maxbars, int) and maxbars > 0 and len(result) >= maxbars:
+                    if (
+                        isinstance(maxbars, int)
+                        and maxbars > 0
+                        and len(result) >= maxbars
+                    ):
                         raise MT5HistoryLimitError(
                             f"MT5 candle history for {symbol!r} reached "
                             f"Max. bars in chart={maxbars}; reduce request interval"
@@ -111,20 +124,27 @@ class MT5Provider:
                             f"MT5 candle schema for {symbol!r} is invalid: {exc}"
                         ) from exc
                 logger.info(
-                    "mt5_request kind=%s symbol=%s rows=%d elapsed_s=%.3f", kind, symbol,
-                    len(filtered), perf_counter() - started,
+                    "mt5_request kind=%s symbol=%s rows=%d elapsed_s=%.3f",
+                    kind,
+                    symbol,
+                    len(filtered),
+                    perf_counter() - started,
                 )
                 return filtered
             # Do not retry bad symbols, invalid dates or unavailable history.
             # Only retry when the terminal actually lost its connection.
             terminal = mt5.terminal_info()
             if attempt == 0 and (terminal is None or not terminal.connected):
-                logger.warning("mt5_retry kind=%s symbol=%s attempt=%d", kind, symbol, attempt + 1)
+                logger.warning(
+                    "mt5_retry kind=%s symbol=%s attempt=%d", kind, symbol, attempt + 1
+                )
                 continue
             code, message = mt5.last_error()
             logger.error(
                 "mt5_request_failed kind=%s symbol=%s code=%d",
-                kind, symbol, code,
+                kind,
+                symbol,
+                code,
             )
             raise MT5RequestError(
                 f"MT5 {kind} request for {symbol} failed [{code}]: {message}"
@@ -166,14 +186,19 @@ class MT5Provider:
                 self._check_connection()
                 self._ensure_symbol(symbol)
                 result = mt5.copy_ticks_from(
-                    symbol, from_us(request_us), page_size, mt5.COPY_TICKS_ALL,
+                    symbol,
+                    from_us(request_us),
+                    page_size,
+                    mt5.COPY_TICKS_ALL,
                 )
                 if result is not None:
                     break
                 terminal = mt5.terminal_info()
                 if attempt == 0 and (terminal is None or not terminal.connected):
                     logger.warning(
-                        "mt5_page_retry symbol=%s attempt=%d", symbol, attempt + 1,
+                        "mt5_page_retry symbol=%s attempt=%d",
+                        symbol,
+                        attempt + 1,
                     )
                     continue
                 code, message = mt5.last_error()
@@ -214,7 +239,9 @@ class MT5Provider:
                 yield selected, cursor_us, last_second_us
             logger.debug(
                 "mt5_page symbol=%s rows=%d window_us=%d elapsed_s=%.3f",
-                symbol, len(selected), last_second_us - cursor_us,
+                symbol,
+                len(selected),
+                last_second_us - cursor_us,
                 perf_counter() - started,
             )
             cursor_us = last_second_us
@@ -222,7 +249,9 @@ class MT5Provider:
     def get_ticks(self, symbol: str, start: datetime, end: datetime) -> ndarray:
         return self._request(symbol, start, end, "ticks")
 
-    def get_candles(self, symbol: str, timeframe: int, start: datetime, end: datetime) -> ndarray:
+    def get_candles(
+        self, symbol: str, timeframe: int, start: datetime, end: datetime
+    ) -> ndarray:
         if timeframe not in VALID:
             raise ValueError(f"Unsupported MT5 timeframe: {timeframe}")
         return self._request(symbol, start, end, "candles", timeframe)
