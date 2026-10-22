@@ -9,7 +9,7 @@ from datetime import timedelta
 from mt5_datahub import MarketData
 
 hub = MarketData(
-    source="broker/account",           # обязательный идентификатор набора
+    source=None,                       # по умолчанию определить счёт MT5
     cache_dir=".mt5-datahub",          # Parquet + SQLite
     provider=None,                     # по умолчанию свой MT5Provider
     tick_chunk=timedelta(hours=2),     # размер временного участка тиков
@@ -18,7 +18,11 @@ hub = MarketData(
 )
 ```
 
-`with MarketData(...) as hub:` вызывает `connect()` / `disconnect()`. Если передан **внешний** `provider`, `MarketData` его не закрывает. Атрибуты: `hub.source`, `hub.cache` (`ParquetCache`).
+`with MarketData(...) as hub:` вызывает `connect()` / `disconnect()`. Если передан **внешний** `provider`, `MarketData` его не закрывает. Атрибуты: `hub.source` (строка), `hub.cache` (`ParquetCache`).
+
+**Автоисточник по умолчанию:** `source=None` (или просто `MarketData()`). На `connect()` определяется идентификатор `<server>/<login>` текущего счёта через `MT5Provider.source_identity()`; имя кэша — `mt5:<server>/<login>`, например `mt5:Bybit-Live-6/12345678` (номер условный). `hub.source` доступен **после** соединения; обращение до него в авто-режиме вызывает `MT5ConnectionError`. Методы загрузки сами подключаются и разрешают имя. В авто-режиме **даже чтение из кэша** проверяет текущий счёт, а переключение счёта на том же объекте вызывает `StorageError`.
+
+**Совместимость:** `source="my-history"` по-прежнему поддерживается и открывает прежний кэш без переименования. Старые имена **не мигрируют** в новый автоисточник автоматически: для доступа к старым данным передайте сохранённое имя. При отсутствии `account_info()` и `source=None` будет `MT5ConnectionError`; при явном `source` сохраняется старое поведение. Имя автоматически содержит **логин счёта** и записывается в локальную SQLite-базу и логи, пароль не записывается.
 
 | Метод | Результат | Когда использовать |
 | --- | --- | --- |
