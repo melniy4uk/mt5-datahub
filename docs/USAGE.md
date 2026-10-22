@@ -19,9 +19,6 @@ uv run python examples/mt5.py
 
 ## 2. Основной сценарий: загрузка → кэш → анализ
 
-<details>
-<summary>Полный пример без дополнительных библиотек анализа</summary>
-
 ```python
 from datetime import UTC, datetime, timedelta
 
@@ -50,8 +47,6 @@ print("Повреждения Parquet:", status.corrupt_segments)
 report = audit_ticks(".mt5-datahub", SOURCE, SYMBOL, START, END)
 print(report.format())
 ```
-
-</details>
 
 Этот сценарий также доступен как исполняемый файл с параметрами:
 
@@ -125,7 +120,7 @@ status = inspect_cache(
     ".mt5-datahub", SOURCE, SYMBOL, START, END,
     kind="ticks",
 )
-print(status.saved_request_coverage)  # Есть ли НЕзапрошенные участки
+print(status.saved_request_coverage)  # Все ли интервалы запроса сохранены
 print(status.files_readable)          # Нет ли обнаруженных повреждений
 print(status.unrequested)            # Список [start, end)
 print(status.corrupt_segments)       # Файл -> причина
