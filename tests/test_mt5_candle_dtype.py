@@ -107,6 +107,12 @@ class CandleDTypeCompatibilityTests(unittest.TestCase):
         ])
         with tempfile.TemporaryDirectory() as tmp:
             cache = ParquetCache(tmp)
+            ticks = np.zeros(1, dtype=TICK_DTYPE)
+            ticks["time_msc"][0] = to_us(self.start) // 1000
+            cache.save(
+                "broker", "XAUUSD.s", "ticks", 0, ticks,
+                to_us(self.start), to_us(self.end),
+            )
             with self.assertRaisesRegex(MT5RequestError, "required"):
                 compare_tick_ohlc_to_m1(
                     cache, "broker", "XAUUSD.s", self.start, self.end,
