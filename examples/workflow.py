@@ -1,7 +1,7 @@
 """Minimal real-MT5 workflow: download, reuse cache, inspect and audit.
 
 Example (PowerShell):
-    uv run python examples/workflow.py --source "my-broker/my-account" --symbol XAUUSD.s
+    uv run python examples/workflow.py --symbol XAUUSD.s
 
 Requires a connected MT5 terminal and broker history. No trading operations.
 """
@@ -20,7 +20,7 @@ from mt5_datahub.quality import audit_ticks
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MT5 history -> cache -> inspection")
-    parser.add_argument("--source", required=True, help="Unique broker/account dataset name")
+    parser.add_argument("--source", default=None, help="Optional custom cache namespace (default: MT5 server/account)")
     parser.add_argument("--symbol", default="XAUUSD.s", help="MT5 symbol, broker-specific")
     parser.add_argument("--cache-dir", default=".mt5-datahub", help="Persistent cache directory")
     parser.add_argument(
@@ -44,6 +44,8 @@ def main() -> None:
     )
 
     with MarketData(source=args.source, cache_dir=args.cache_dir) as data:
+        source = data.source  # Auto-detected from the connected MT5 account.
+        print(f"Cache source: {source}")
         ticks = data.get_ticks(args.symbol, start, end)
         candles = data.get_candles(args.symbol, mt5.TIMEFRAME_M1, start, end)
         cached = data.get_ticks(args.symbol, start, end)
@@ -57,13 +59,13 @@ def main() -> None:
         print(f"First request: {len(ticks)} ticks; second request: {len(cached)} ticks")
         print(f"Batch read: {count} ticks; closed M1 candles: {len(candles)}")
 
-    inspection = inspect_cache(args.cache_dir, args.source, args.symbol, start, end)
+    inspection = inspect_cache(args.cache_dir, source, args.symbol, start, end)
     print(f"Saved request coverage: {inspection.saved_request_coverage}")
     print(f"Parquet readable: {inspection.files_readable}")
     print(f"Unrequested intervals: {inspection.unrequested}")
     print(f"Corrupt segments: {inspection.corrupt_segments}")
 
-    report = audit_ticks(args.cache_dir, args.source, args.symbol, start, end)
+    report = audit_ticks(args.cache_dir, source, args.symbol, start, end)
     print(report.format())
     print("Note: cache coverage is not proof of complete broker history.")
 
