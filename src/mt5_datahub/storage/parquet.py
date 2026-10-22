@@ -82,6 +82,14 @@ class ParquetCache:
         finally:
             db.close()
 
+    def get_source_identity(self, source: str) -> str | None:
+        """Return the bound broker/server account key, or None for legacy data."""
+        with self._db() as db:
+            row = db.execute(
+                "SELECT identity FROM source_bindings WHERE source=?", (source,)
+            ).fetchone()
+            return str(row[0]) if row is not None else None
+
     def bind_source(self, source: str, identity: str) -> bool:
         """Pin a NEW cache source to the actual broker account/server.
 
