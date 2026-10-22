@@ -9,7 +9,7 @@ import MetaTrader5 as mt5
 import numpy as np
 from numpy import ndarray
 
-from mt5_datahub.arrays import TICK_DTYPE, select_range
+from mt5_datahub.arrays import TICK_DTYPE, canonical_candles, select_range
 from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, MT5RequestError
 from mt5_datahub.timeframes import VALID
 from mt5_datahub.timeutils import from_us, to_us, validate_range
@@ -104,6 +104,12 @@ class MT5Provider:
                             f"MT5 candle history for {symbol!r} reached "
                             f"Max. bars in chart={maxbars}; reduce request interval"
                         )
+                    try:
+                        filtered = canonical_candles(filtered)
+                    except ValueError as exc:
+                        raise MT5RequestError(
+                            f"MT5 candle schema for {symbol!r} is invalid: {exc}"
+                        ) from exc
                 logger.info(
                     "mt5_request kind=%s symbol=%s rows=%d elapsed_s=%.3f", kind, symbol,
                     len(filtered), perf_counter() - started,

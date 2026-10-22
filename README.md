@@ -174,6 +174,11 @@ uv run python examples/compare_xauusd_history.py
 
 ## Дополнительная сверка тиков со свечами M1
 
+Реальный MT5 может возвращать `tick_volume` и `real_volume` как
+беззнаковые 64-битные числа. Провайдер нормализует эти поля к формату
+библиотеки с проверкой переполнения; сверка M1 проверяет только типы
+`time` и OHLC, не требуя совпадения служебных полей.
+
 ```powershell
 uv run python examples/check_tick_ohlc_live.py --tolerance 0.01
 ```
