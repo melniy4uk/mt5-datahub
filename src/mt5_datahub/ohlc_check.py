@@ -187,7 +187,10 @@ def compare_tick_ohlc_to_m1(
                 )
         for minute_us in sorted(set(minute_ohlc) | set(candle_map)):
             tick_prices = minute_ohlc.get(minute_us)
-            ohlc = tuple(tick_prices) if tick_prices is not None else None
+            ohlc = (
+                (tick_prices[0], tick_prices[1], tick_prices[2], tick_prices[3])
+                if tick_prices is not None else None
+            )
             broker = candle_map.get(minute_us)
             if ohlc is None:
                 record(minute_us, "broker-bar-without-cached-ticks", None, broker)
