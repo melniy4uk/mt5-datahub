@@ -31,6 +31,16 @@ class CountingProvider(MT5Provider):
         self.calls = 0
         self.fail_on_call: int | None = None
 
+    def iter_tick_pages(self, symbol, start, end, *, page_size=50_000):
+        if symbol != SYMBOL:
+            raise AssertionError(f"Unexpected instrument {symbol}")
+        self.calls += 1
+        if self.fail_on_call == self.calls:
+            raise RuntimeError("Deliberate interruption for recovery test")
+        yield from super().iter_tick_pages(
+            symbol, start, end, page_size=page_size,
+        )
+
     def get_ticks(self, symbol: str, start: datetime, end: datetime) -> np.ndarray:
         if symbol != SYMBOL:
             raise AssertionError(f"Unexpected instrument {symbol}")
@@ -94,8 +104,8 @@ def run(cache_dir: Path, start: datetime, end: datetime) -> None:
             # Different ticks can have the same millisecond; do not deduplicate by time.
             print(f"Recovered rows: {len(all_ticks):,}")
             print(f"Extended rows: {len(extended_ticks):,}")
-            print(f"Calls before simulated failure: {first_provider.calls}")
-            print(f"Calls after restart: {second_provider.calls}")
+            print(f"Tick windows before simulated failure: {first_provider.calls}")
+            print(f"Tick windows after restart: {second_provider.calls}")
             print(f"Duplicate timestamps (not dropped): {len(all_ticks) - len(np.unique(all_ticks['time_msc'])):,}")
             print("PASS: XAUUSD.s multi-day load, recovery, overlap, cache reuse, extension")
     finally:

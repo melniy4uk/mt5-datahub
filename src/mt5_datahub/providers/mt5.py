@@ -1,16 +1,18 @@
 """MetaTrader 5 adapter. No caching or filesystem responsibilities."""
 import logging
 from datetime import datetime
+from collections.abc import Iterator
 from time import perf_counter
 from typing import Self
 
 import MetaTrader5 as mt5
+import numpy as np
 from numpy import ndarray
 
-from mt5_datahub.arrays import select_range
+from mt5_datahub.arrays import TICK_DTYPE, select_range
 from mt5_datahub.exceptions import MT5ConnectionError, MT5HistoryLimitError, MT5RequestError
 from mt5_datahub.timeframes import VALID
-from mt5_datahub.timeutils import to_us, validate_range
+from mt5_datahub.timeutils import from_us, to_us, validate_range
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,94 @@ class MT5Provider:
                 f"MT5 {kind} request for {symbol} failed [{code}]: {message}"
             )
         raise MT5RequestError("MT5 request retry exhausted")
+
+    def iter_tick_pages(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        page_size: int = 50_000,
+    ) -> Iterator[tuple[ndarray, int, int]]:
+        """Fetch count-bounded tick pages as (rows, left_us, right_us).
+
+        MetaTrader5 documents date_from as a datetime / Unix seconds; it does
+        not promise sub-second cursor precision. Therefore pagination uses
+        whole-second cursors. On a full native response, the last second is
+        deliberately NOT saved and is fetched inclusive by the next page.
+        A whole second that does not fit in one page causes an explicit error
+        instead of a silent loss or a falsely covered cache interval.
+
+        An empty response leaves its interval uncovered. Tick counts bound
+        one native reply, NOT the final get_ticks() ndarray or process RSS.
+        """
+        start, end = validate_range(start, end)
+        if page_size < 2:
+            raise ValueError("page_size must be >= 2")
+        start_us, end_us = to_us(start), to_us(end)
+        cursor_us = start_us
+        while cursor_us < end_us:
+            started = perf_counter()
+            result = None
+            # Always request from an exact second. Microsecond datetimes may
+            # be rounded/truncated by different MT5 terminal builds.
+            request_us = (cursor_us // 1_000_000) * 1_000_000
+            for attempt in range(2):
+                self._check_connection()
+                self._ensure_symbol(symbol)
+                result = mt5.copy_ticks_from(
+                    symbol, from_us(request_us), page_size, mt5.COPY_TICKS_ALL,
+                )
+                if result is not None:
+                    break
+                terminal = mt5.terminal_info()
+                if attempt == 0 and (terminal is None or not terminal.connected):
+                    logger.warning(
+                        "mt5_page_retry symbol=%s attempt=%d", symbol, attempt + 1,
+                    )
+                    continue
+                code, message = mt5.last_error()
+                raise MT5RequestError(
+                    f"MT5 tick page for {symbol!r} failed [{code}]: {message}"
+                )
+            if result is None:
+                raise MT5RequestError("MT5 tick page retry exhausted")
+            if result.dtype != TICK_DTYPE:
+                raise MT5RequestError("MT5 returned an unexpected tick dtype")
+            if len(result) > page_size:
+                raise MT5RequestError("MT5 returned more ticks than requested")
+            if len(result) == 0:
+                return
+            times = result["time_msc"]
+            if np.any(np.diff(times) < 0):
+                raise MT5RequestError("MT5 returned ticks out of chronological order")
+            last_tick_us = int(times[-1]) * 1000
+            last_second_us = (last_tick_us // 1_000_000) * 1_000_000
+
+            if len(result) < page_size or last_second_us >= end_us:
+                # Either the native count was not exhausted or we fetched at
+                # least one complete second beyond the requested end.
+                selected = select_range(result, "ticks", cursor_us, end_us)
+                if len(selected):
+                    yield selected, cursor_us, end_us
+                return
+
+            if last_second_us <= cursor_us:
+                raise MT5RequestError(
+                    f"At least {page_size} ticks were returned within one "
+                    f"second ({request_us // 1_000_000}); MT5 cannot "
+                    "paginate this interval safely. Increase max_tick_rows."
+                )
+
+            selected = select_range(result, "ticks", cursor_us, last_second_us)
+            if len(selected):
+                yield selected, cursor_us, last_second_us
+            logger.debug(
+                "mt5_page symbol=%s rows=%d window_us=%d elapsed_s=%.3f",
+                symbol, len(selected), last_second_us - cursor_us,
+                perf_counter() - started,
+            )
+            cursor_us = last_second_us
 
     def get_ticks(self, symbol: str, start: datetime, end: datetime) -> ndarray:
         return self._request(symbol, start, end, "ticks")

@@ -28,6 +28,13 @@ class CountingMT5Provider(MT5Provider):
         self.tick_calls = 0
         self.candle_calls = 0
 
+    def iter_tick_pages(self, symbol, start, end, *, page_size=50_000):
+        assert symbol == SYMBOL
+        self.tick_calls += 1
+        yield from super().iter_tick_pages(
+            symbol, start, end, page_size=page_size,
+        )
+
     def get_ticks(self, symbol, start, end):
         assert symbol == SYMBOL
         self.tick_calls += 1
@@ -79,7 +86,7 @@ def main() -> None:
             print(f"Первый интервал: {len(first)} тиков")
             print(f"Полный интервал: {len(full)} тиков")
             print(f"Свечей M1: {len(bars)}")
-            print(f"Вызовов MT5: тики={provider.tick_calls}, свечи={provider.candle_calls}")
+            print(f"Участков загрузки MT5: тики={provider.tick_calls}, свечи={provider.candle_calls}")
             print("PASS: кэш, повторное чтение, дозагрузка и свечи XAUUSD.s")
 
 

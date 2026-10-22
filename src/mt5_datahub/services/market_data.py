@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Self
+from typing import Self, cast
 
 from numpy import ndarray
 
@@ -38,8 +38,8 @@ class MarketData:
             raise ValueError("source must identify broker/server/account")
         if tick_chunk <= timedelta(0) or candle_chunk <= timedelta(0):
             raise ValueError("Chunk durations must be positive")
-        if max_tick_rows < 1:
-            raise ValueError("max_tick_rows must be positive")
+        if max_tick_rows < 2:
+            raise ValueError("max_tick_rows must be at least 2")
         self.source = source
         self.cache = ParquetCache(cache_dir)
         self._provider = provider if provider is not None else MT5Provider()
@@ -262,6 +262,28 @@ class MarketData:
             window = self._chunk[kind]
             while cursor < right:
                 stop = min(cursor + window, right)
+                # MT5Provider supports page-limited copy_ticks_from. Retain
+                # compatibility with injected providers exposing get_ticks only.
+                page_reader = (
+                    getattr(self._provider, "iter_tick_pages", None)
+                    if kind == "ticks" else None
+                )
+                if callable(page_reader):
+                    pages = cast(
+                        Iterator[tuple[ndarray, int, int]],
+                        page_reader(
+                            symbol, from_us(cursor), from_us(stop),
+                            page_size=self._max_tick_rows,
+                        ),
+                    )
+                    for page, page_left, page_right in pages:
+                        if len(page):
+                            self.cache.save(
+                                self.source, symbol, kind, timeframe,
+                                page, page_left, page_right,
+                            )
+                    cursor = stop
+                    continue
                 if kind == "ticks":
                     rows = self._provider.get_ticks(symbol, from_us(cursor), from_us(stop))
                     if len(rows) > self._max_tick_rows:

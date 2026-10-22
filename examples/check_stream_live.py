@@ -29,6 +29,13 @@ class CountingProvider(MT5Provider):
         super().__init__()
         self.tick_calls = 0
 
+    def iter_tick_pages(self, symbol, start, end, *, page_size=50_000):
+        assert symbol == SYMBOL
+        self.tick_calls += 1
+        yield from super().iter_tick_pages(
+            symbol, start, end, page_size=page_size,
+        )
+
     def get_ticks(self, symbol, start, end):
         assert symbol == SYMBOL
         self.tick_calls += 1
@@ -74,7 +81,7 @@ def main() -> None:
             print(f"First batch: {len(first):,} ticks")
             print(f"Complete range: {len(full):,} ticks")
             print(f"Batches: {len(batches)}")
-            print(f"MT5 tick requests: {provider.tick_calls}")
+            print(f"MT5 tick windows: {provider.tick_calls}")
             print("PASS: early yield, resume, cached replay and exact tick equality")
         finally:
             # An injected provider is intentionally not owned by MarketData.
