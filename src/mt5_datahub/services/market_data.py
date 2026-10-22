@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Self
+from typing import Self, cast
 
 from numpy import ndarray
 
@@ -269,10 +269,14 @@ class MarketData:
                     if kind == "ticks" else None
                 )
                 if callable(page_reader):
-                    for page, page_left, page_right in page_reader(
-                        symbol, from_us(cursor), from_us(stop),
-                        page_size=self._max_tick_rows,
-                    ):
+                    pages = cast(
+                        Iterator[tuple[ndarray, int, int]],
+                        page_reader(
+                            symbol, from_us(cursor), from_us(stop),
+                            page_size=self._max_tick_rows,
+                        ),
+                    )
+                    for page, page_left, page_right in pages:
                         if len(page):
                             self.cache.save(
                                 self.source, symbol, kind, timeframe,
