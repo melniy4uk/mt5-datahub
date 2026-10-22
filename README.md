@@ -132,6 +132,7 @@ print("Broken segments:", broken)
 uv run python -m unittest discover -s tests -v
 uv run python examples/check_integration.py
 uv run python examples/check_stream_live.py
+uv run python examples/check_tick_pages_live.py
 uv run python examples/audit_xauusd.py --sessions examples/bybit-live-6-xauusd-s.sessions.json
 uv run python examples/benchmark_cache.py
 ```
