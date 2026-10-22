@@ -16,8 +16,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Check reproducible lockfile
+        run: uv lock --check
       - name: Resolve and install
-        run: uv sync
+        run: uv sync --locked
       - name: Compile
         run: uv run python -m compileall -q src tests examples
       - name: Lint
@@ -30,3 +32,12 @@ jobs:
           uv run --with coverage coverage report -m --fail-under=65
       - name: Build distributable
         run: uv build
+      - name: Verify isolated wheel install
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -Path dist -Filter '*.whl' | Select-Object -First 1
+          if ($null -eq $wheel) { throw 'Missing wheel in dist' }
+          uv venv .release-test-env --python ${{ matrix.python-version }}
+          $python = Join-Path (Get-Location) '.release-test-env/Scripts/python.exe'
+          uv pip install --python $python $wheel.FullName
+          & $python -c "from importlib.metadata import version; from mt5_datahub import MarketData, CacheInspection, inspect_cache; assert version('mt5-datahub') == '0.2.0'; print('Wheel API import PASS')"
